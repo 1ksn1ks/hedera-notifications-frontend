@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "284824400796",
+    "project_id": "ksn1ks",
+    "storage_bucket": "ksn1ks.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:284824400796:android:e0a05e8e4a781d1ec34e59",
+        "android_client_info": {
+          "package_name": "com.hederanotifierapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWCWnnBVC-l8y9H9B_Cq-ZM83ApsGPLT0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
