@@ -23,7 +23,7 @@ import {
   disconnectWallet,
 } from './walletConnect';
 
-const BACKEND_URL = 'http://10.84.14.100:3000';
+const BACKEND_URL = 'http://10.18.36.100:3000';
 
 function FilterList({
   title,
@@ -210,7 +210,17 @@ function App(): React.JSX.Element {
       const res = await fetch(
         `${BACKEND_URL}/api/messages/${encodeURIComponent(wallet)}`
       );
-      const data = await res.json();
+      const data = (await res.json()) as {
+        success?: boolean;
+        messages?: {
+          id: string;
+          topic_id: string;
+          sender?: string;
+          body: string;
+          created_at: string;
+        }[];
+        error?: string;
+      };
       if (data.success && data.messages) {
         setMessages(
           data.messages.map((m: any) => ({
@@ -364,7 +374,17 @@ function App(): React.JSX.Element {
       const response = await fetch(
         `${BACKEND_URL}/api/subscriptions/${encodeURIComponent(wallet)}`
       );
-      const data = await response.json();
+      const data = (await response.json()) as {
+        success?: boolean;
+        subscriptions?: {
+          topic_id: string;
+          show_full_message?: boolean;
+          filter_mode?: string;
+          allowed_senders?: string[];
+          blocked_senders?: string[];
+        }[];
+        error?: string;
+      };
 
       if (data.success && data.subscriptions) {
         const topics = data.subscriptions.map((s: any) => ({
@@ -406,7 +426,11 @@ function App(): React.JSX.Element {
         }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as {
+        success?: boolean;
+        topicId?: string;
+        error?: string;
+      };
 
       if (data.success) {
         const finalTopicId = data.topicId || cleaned;
@@ -448,7 +472,10 @@ function App(): React.JSX.Element {
         }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+      };
       if (data.success) {
         setSubscribedTopics(prev => prev.filter(t => t.topicId !== topic));
         Alert.alert('Success', `Unsubscribed from ${topic}`);
