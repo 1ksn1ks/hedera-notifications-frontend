@@ -1,7 +1,24 @@
 npx react-native run-android
 
-
-
-
+༼ ◕_◕ ゞ༽
 
 npx react-native start --reset-cache
+
+༼ ◕_◕ ゞ༽
+
+cd android && ./gradlew clean && cd ..
+npx react-native run-android
+
+༼ ◕_◕ ゞ༽
+
+git add .
+git commit -m "your message here"
+git push
+
+༼ ◕_◕ ゞ༽
+
+git add .
+git commit -m "update"
+git push
+
+༼ ◕_◕ ゞ༽
