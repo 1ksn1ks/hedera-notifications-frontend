@@ -25,6 +25,20 @@ import {
 
 const BACKEND_URL = 'http://10.18.36.100:3000';
 
+function formatTime(date: Date | string = new Date()) {
+  const d = new Date(date);
+
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+
+  const hours = String(d.getHours()).padStart(2, '0');     // always 24h
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+
+  return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+}
+
 function FilterList({
   title,
   list,
@@ -86,8 +100,16 @@ function App(): React.JSX.Element {
     }[]
   >([]);
   const [messages, setMessages] = useState<
-    { id: string; title: string; body: string; topicId?: string; time: string }[]
-  >([]);
+  {
+    id: string;
+    title: string;          // topic id
+    body: string;           // pure message text
+    topicId?: string;
+    time: string;
+    payerId?: string;       // the account that sent it
+    username?: string;      // optional display name
+  }[]
+>([]);
 
   useEffect(() => {
     setupNotifications();
@@ -120,26 +142,60 @@ function App(): React.JSX.Element {
         remoteMessage?.data?.title ||
         'Hedera'
     );
-    const body = String(
+  
+    // The body from the push notification is usually already formatted like:
+    // "username (0.0.xxx): message" or "0.0.xxx: message"
+    const fullBody = String(
       remoteMessage?.notification?.body ||
         remoteMessage?.data?.body ||
         ''
     );
+  
     const topicId = remoteMessage?.data?.topicId
       ? String(remoteMessage.data.topicId)
       : undefined;
-
-    if (!body && title === 'Hedera') return;
-
+  
+    if (!fullBody && title === 'Hedera') return;
+  
+    // Try to parse "username (0.0.xxx): message" or "0.0.xxx: message"
+    let username: string | undefined;
+    let payerId: string | undefined;
+    let body = fullBody;
+  
+    const match = fullBody.match(/^(.*?)\s*(?:\((0\.0\.\d+)\))?:\s*(.*)$/);
+    if (match) {
+      const possibleName = match[1]?.trim();
+      const possiblePayer = match[2];
+      const possibleBody = match[3]?.trim();
+  
+      if (possiblePayer) {
+        // Format was: username (0.0.xxx): message
+        username = possibleName || undefined;
+        payerId = possiblePayer;
+        body = possibleBody || fullBody;
+      } else if (possibleName?.match(/^0\.0\.\d+$/)) {
+        // Format was: 0.0.xxx: message
+        payerId = possibleName;
+        body = possibleBody || fullBody;
+      }
+    }
+  
     const item = {
       id: `${Date.now()}-${Math.random()}`,
-      title,
-      body,
+      title,                    // topic id
+      body,                     // pure message text
       topicId,
-      time: new Date().toLocaleTimeString(),
+      time: formatTime(),       // use the same helper we created earlier
+      payerId,
+      username,
     };
-
+  
     setMessages(prev => {
+      // Avoid duplicates if the same message arrives multiple times
+      if (prev.some(m => m.body === item.body && m.topicId === item.topicId)) {
+        return prev;
+      }
+  
       const next = [item, ...prev].slice(0, 100);
       AsyncStorage.setItem('messages', JSON.stringify(next));
       return next;
@@ -150,19 +206,21 @@ function App(): React.JSX.Element {
   useEffect(() => {
     const unsubscribe = messaging().onMessage(async remoteMessage => {
       addMessageFromRemote(remoteMessage);
-
-      const title = String(remoteMessage.notification?.title || 'Hedera');
-      const body = String(remoteMessage.notification?.body || '');
-      const topicId = remoteMessage.data?.topicId
-        ? String(remoteMessage.data.topicId)
-        : undefined;
-
+    
+      const data = remoteMessage.data || {};
+    
+      const title = String(data.title || data.topicId || 'Hedera');
+      const body = String(data.body || '');
+      const topicId = data.topicId ? String(data.topicId) : undefined;
+    
       await notifee.displayNotification({
         title,
         body,
         android: {
           channelId: 'hedera-messages',
           pressAction: { id: 'default' },
+          importance: AndroidImportance.HIGH,
+          sound: 'default',
         },
         data: topicId ? { topicId } : undefined,
       });
@@ -221,16 +279,22 @@ function App(): React.JSX.Element {
         }[];
         error?: string;
       };
+
+      console.log('Backend response:', JSON.stringify(data, null, 2)); // ← add this
+
+
       if (data.success && data.messages) {
-        setMessages(
-          data.messages.map((m: any) => ({
-            id: String(m.id),
-            title: m.topic_id,
-            body: m.sender ? `${m.sender}: ${m.body}` : m.body,
-            topicId: m.topic_id,
-            time: new Date(m.created_at).toLocaleString(),
-          }))
-        );
+          setMessages(
+            data.messages.map((m: any) => ({
+              id: String(m.id),
+              title: m.topic_id,
+              body: m.body,
+              topicId: m.topic_id,
+              time: formatTime(m.created_at),
+              payerId: m.payer || m.payer_account_id || undefined,  // real account
+              username: m.sender || m.username || undefined,        // the handle
+            }))
+          );
       }
     } catch (e) {
       console.log('loadMessages failed', e);
@@ -606,24 +670,63 @@ function App(): React.JSX.Element {
           />
         )}
 
-        {messages.length === 0 ? (
-          <Text style={styles.empty}>No messages yet</Text>
-        ) : (
-          messages.map(msg => (
-            <View key={msg.id} style={styles.topicCard}>
-              <Text style={styles.topicText}>{msg.title}</Text>
-              <Text>{msg.body}</Text>
-              {msg.topicId ? (
-                <Text style={{ color: '#666', marginTop: 6 }}>
-                  Topic: {msg.topicId}
-                </Text>
-              ) : null}
-              <Text style={{ color: '#999', marginTop: 4, fontSize: 12 }}>
+{messages.length === 0 ? (
+  <Text style={styles.empty}>No messages yet</Text>
+) : (
+  (() => {
+    // Group messages by topic
+    const grouped = messages.reduce((acc, msg) => {
+      const key = msg.topicId || msg.title || 'Unknown';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(msg);
+      return acc;
+    }, {} as Record<string, typeof messages>);
+
+    return Object.entries(grouped).map(([topic, msgs]) => (
+      <View key={topic} style={styles.topicCard}>
+        {/* Topic header */}
+        <Text style={styles.topicText}>{topic}</Text>
+
+        {/* Messages under this topic */}
+        {msgs.map((msg, index) => (
+          <View key={msg.id}>
+            <View style={{ marginLeft: 8, marginBottom: 10 }}>
+              <Text>
+                {msg.username ? (
+                  <Text style={{ fontWeight: '600' }}>
+                    {msg.username}
+                    {msg.payerId ? ` (${msg.payerId})` : ''}:{' '}
+                  </Text>
+                ) : msg.payerId ? (
+                  <Text style={{ fontWeight: '600' }}>
+                    {msg.payerId}:{' '}
+                  </Text>
+                ) : null}
+                {msg.body}
+              </Text>
+
+              <Text style={{ color: '#999', marginTop: 2, fontSize: 12 }}>
                 {msg.time}
               </Text>
             </View>
-          ))
-        )}
+
+            {/* Divider between messages (not after the last one) */}
+            {index < msgs.length - 1 && (
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: '#f0f0f0',
+                  marginVertical: 4,
+                  marginLeft: 8,
+                }}
+              />
+            )}
+          </View>
+        ))}
+      </View>
+    ));
+  })()
+)}
 
         <Text style={[styles.label, { marginTop: 20 }]}>
           Add Topic ID / Domain name
