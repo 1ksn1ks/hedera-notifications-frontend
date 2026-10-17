@@ -7,6 +7,25 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:284824400796:android:1248c1c012196e9ac34e59",
+        "android_client_info": {
+          "package_name": "com.hedera.notificationapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWCWnnBVC-l8y9H9B_Cq-ZM83ApsGPLT0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:284824400796:android:e0a05e8e4a781d1ec34e59",
         "android_client_info": {
           "package_name": "com.hederanotifierapp"

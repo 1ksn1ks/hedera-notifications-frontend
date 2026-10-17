@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  SafeAreaView,
+  StatusBar,
   Text,
   StyleSheet,
   TextInput,
@@ -14,11 +14,20 @@ import {
   Image,
   Pressable,
   Linking,
+  Animated,
+  Easing,
+  AccessibilityInfo,
 } from 'react-native';
+import {
+  initialWindowMetrics,
+  SafeAreaProvider,
+  SafeAreaView,
+} from 'react-native-safe-area-context';
 import messaging from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance } from '@notifee/react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Svg, { Path } from 'react-native-svg';
 import {
   getPairingUri,
   getConnectedAccount,
@@ -31,7 +40,73 @@ import {
   type MeritocracyView,
 } from './meritocracyFormat';
 
-const BACKEND_URL = 'http://10.18.36.100:3000';
+const BACKEND_URL = 'https://hedera-notifications-backend-production.up.railway.app';
+const DEFAULT_AVATAR =
+  'https://kiloscribe.com/api/inscription-cdn/0.0.4819119';
+
+function PinMark({ on }: { on: boolean }) {
+  return (
+    <Svg width={16} height={16} viewBox="0 0 24 24">
+      <Path
+        d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1.03 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+        fill={on ? '#22d3ee' : '#5e6474'}
+      />
+    </Svg>
+  );
+}
+
+function PinButton({
+  on,
+  label,
+  onPress,
+}: {
+  on: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={styles.pinBtn}
+      accessibilityRole="button"
+      accessibilityLabel={on ? `Unpin ${label}` : `Pin ${label}`}
+      accessibilityState={{ selected: on }}
+      hitSlop={6}
+      onPress={onPress}>
+      <PinMark on={on} />
+    </Pressable>
+  );
+}
+
+function floatPins<T>(rows: T[], pins: string[], idOf: (row: T) => string) {
+  const rank = new Map(pins.map((id, index) => [id, index]));
+  return rows
+    .map((row, index) => ({
+      row,
+      index,
+      pin: rank.has(idOf(row)) ? (rank.get(idOf(row)) as number) : Number.POSITIVE_INFINITY,
+    }))
+    .sort((a, b) => a.pin - b.pin || a.index - b.index)
+    .map(item => item.row);
+}
+
+function rememberPins(key: string, next: string[]) {
+  AsyncStorage.setItem(key, JSON.stringify(next)).catch(() => {});
+}
+
+function Avatar({ uri, size = 32 }: { uri?: string; size?: number }) {
+  const source = uri && /^https?:\/\//i.test(uri) ? uri : DEFAULT_AVATAR;
+  return (
+    <Image
+      source={{ uri: source }}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: '#12141a',
+      }}
+    />
+  );
+}
 
 function formatTime(date: Date | string = new Date()) {
   const d = new Date(date);
@@ -95,6 +170,153 @@ function FilterList({
   );
 }
 
+const FILTER_MODES = ['all', 'allowlist', 'blocklist'] as const;
+const FILTER_LABELS = ['Everyone', 'Allow list', 'Block list'] as const;
+
+function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: (typeof FILTER_MODES)[number];
+  onChange: (mode: (typeof FILTER_MODES)[number]) => void;
+}) {
+  const index = mode === 'allowlist' ? 1 : mode === 'blocklist' ? 2 : 0;
+  const slide = useRef(new Animated.Value(index)).current;
+  const [track, setTrack] = useState(0);
+  const reduce = useRef(false);
+
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled().then(value => {
+      if (live) reduce.current = value;
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const anim = Animated.timing(slide, {
+      toValue: index,
+      duration: reduce.current ? 0 : 240,
+      easing: Easing.bezier(0.16, 1, 0.3, 1),
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [index, slide]);
+
+  const gap = 8;
+  const cell = track > 0 ? (track - gap * 2) / 3 : 0;
+  const x = slide.interpolate({
+    inputRange: [0, 1, 2],
+    outputRange: [0, cell + gap, (cell + gap) * 2],
+  });
+
+  return (
+    <View
+      style={styles.modes}
+      onLayout={event => setTrack(event.nativeEvent.layout.width)}>
+      {cell > 0 ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.modePill, { width: cell, transform: [{ translateX: x }] }]}
+        />
+      ) : null}
+      {FILTER_MODES.map((item, i) => (
+        <Pressable
+          key={item}
+          style={[styles.modeBtn, styles.modeHit, index === i && styles.modeHitOn]}
+          onPress={() => onChange(item)}>
+          <Text style={index === i ? styles.modeOnText : styles.modeOffText}>
+            {FILTER_LABELS[i]}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function FilterReveal({
+  mode,
+  children,
+}: {
+  mode: string;
+  children: React.ReactNode;
+}) {
+  const open = mode === 'allowlist' || mode === 'blocklist';
+  const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
+  const fade = useRef(new Animated.Value(1)).current;
+  const [height, setHeight] = useState(0);
+  const held = useRef(children);
+  const reduce = useRef(false);
+  if (open) held.current = children;
+
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled().then(value => {
+      if (live) reduce.current = value;
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const anim = Animated.timing(progress, {
+      toValue: open ? 1 : 0,
+      duration: reduce.current ? 0 : 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [open, progress]);
+
+  useEffect(() => {
+    if (!open) return;
+    fade.setValue(reduce.current ? 1 : 0);
+    const anim = Animated.timing(fade, {
+      toValue: 1,
+      duration: reduce.current ? 0 : 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [mode, open, fade]);
+
+  const shift = fade.interpolate({
+    inputRange: [0, 1],
+    outputRange: [8, 0],
+  });
+  const clip = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, Math.max(height, 1)],
+  });
+
+  if (!open && height === 0) return null;
+
+  return (
+    <Animated.View
+      style={{
+        height: height === 0 ? undefined : clip,
+        opacity: progress,
+        overflow: 'hidden',
+      }}>
+      <View
+        onLayout={event => {
+          const next = event.nativeEvent.layout.height;
+          if (next > 0 && Math.abs(next - height) > 1) setHeight(next);
+        }}>
+        <Animated.View style={{ opacity: fade, transform: [{ translateY: shift }] }}>
+          {open ? children : held.current}
+        </Animated.View>
+      </View>
+    </Animated.View>
+  );
+}
+
 function MessageBody({
   raw,
   topicId,
@@ -135,12 +357,8 @@ function MessageBody({
     const label = view.kind === 'marker-delete' ? 'Marker' : 'Polygon';
     return (
       <View style={styles.kindCard}>
-        <Text style={[styles.kindLabel, label === 'Polygon' && styles.kindBlue]}>
-          {label}
-        </Text>
-        <Text style={styles.chatBody}>
-          {label} #{view.number} removed
-        </Text>
+        <Text style={styles.kindLabel}>{label}</Text>
+        <Text style={styles.chatBody}>{label} removed</Text>
       </View>
     );
   }
@@ -156,21 +374,23 @@ function PlaceCard({
   topicId?: string;
   payer?: string;
 }) {
-  const label = view.kind === 'marker' ? 'Marker' : 'Polygon';
+  const label = view.shared
+    ? view.kind === 'polygon'
+      ? 'Shared polygon'
+      : 'Shared marker'
+    : view.kind === 'marker'
+      ? 'Marker'
+      : 'Polygon';
   const video = /\.(mp4|webm)(\?|#|$)/i.test(view.image);
   return (
     <View style={[styles.kindCard, styles.placeCard]}>
-      <Text style={[styles.kindLabel, label === 'Polygon' && styles.kindBlue]}>
-        {label}
-        {view.number ? `  #${view.number}` : ''}
-      </Text>
+      <Text style={styles.kindLabel}>{label}</Text>
       {view.title.trim() ? (
         <Text style={styles.cardTitle}>{view.title}</Text>
       ) : null}
       {view.text.trim() ? (
         <Text style={styles.chatBody}>{view.text}</Text>
       ) : null}
-      {view.cord.trim() ? <Text style={styles.cord}>{view.cord}</Text> : null}
       {view.image && !video ? (
         <Image source={{ uri: view.image }} style={styles.cardImage} />
       ) : null}
@@ -180,8 +400,8 @@ function PlaceCard({
         onPress={() => {
           const url = placeUrl({
             kind: view.kind,
-            topicId,
-            payer,
+            topicId: view.placeTopic || topicId,
+            payer: view.shared ? view.placePayer || '' : payer,
             number: view.number,
             cord: view.cord,
           });
@@ -193,13 +413,33 @@ function PlaceCard({
   );
 }
 
+function screenDepth(name: string) {
+  if (name === 'settings') return 2;
+  if (name === 'thread' || name === 'person' || name === 'account') return 1;
+  return 0;
+}
+
 function App(): React.JSX.Element {
   const [token, setToken] = useState('');
   const [status, setStatus] = useState('Starting...');
   const [topicId, setTopicId] = useState('');
+  const [addingTopic, setAddingTopic] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [deleteAsk, setDeleteAsk] = useState<{
+    label: string;
+    run: () => void;
+    yes?: string;
+    verb?: string;
+  } | null>(null);
   const [walletAddress, setWalletAddress] = useState('');
   const [walletInput, setWalletInput] = useState('');
   const [pairingUri, setPairingUri] = useState('');
+  const [notice, setNotice] = useState<{
+    title: string;
+    body?: string;
+    tone: 'ok' | 'bad';
+  } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [subscribedTopics, setSubscribedTopics] = useState<
     {
       topicId: string;
@@ -217,7 +457,8 @@ function App(): React.JSX.Element {
     topicId?: string;
     time: string;
     payerId?: string;       // the account that sent it
-    username?: string;      // optional display name
+    username?: string;      // Meritocracy username from 0.0.9609904
+    profilePic?: string;    // Meritocracy picture from 0.0.9609881
   }[]
 >([]);
   const [screen, setScreen] = useState<
@@ -226,6 +467,8 @@ function App(): React.JSX.Element {
   const [openTopic, setOpenTopic] = useState('');
   const [openUser, setOpenUser] = useState('');
   const [inboxBy, setInboxBy] = useState<'topic' | 'user'>('topic');
+  const [pinnedTopics, setPinnedTopics] = useState<string[]>([]);
+  const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
   const [topicQuery, setTopicQuery] = useState('');
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const [picking, setPicking] = useState<'' | 'message' | 'chat'>('');
@@ -233,6 +476,194 @@ function App(): React.JSX.Element {
   const [domainRows, setDomainRows] = useState<
     { domain: string; topicId: string; expiresAt: number }[]
   >([]);
+  const menuProgress = useRef(new Animated.Value(0)).current;
+  const [menuShown, setMenuShown] = useState(false);
+  const enter = useRef(new Animated.Value(1)).current;
+  const enterX = useRef(new Animated.Value(0)).current;
+  const addProgress = useRef(new Animated.Value(0)).current;
+  const [addShown, setAddShown] = useState(false);
+  const askProgress = useRef(new Animated.Value(0)).current;
+  const [askShown, setAskShown] = useState(false);
+  const [askHold, setAskHold] = useState<typeof deleteAsk>(null);
+  const motionKey = useRef(`${screen}|${inboxBy}`);
+  const reduceMotionRef = useRef(false);
+  const barTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [barOn, setBarOn] = useState(false);
+  const menuOpenRef = useRef(menuOpen);
+  menuOpenRef.current = menuOpen;
+
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled().then(value => {
+      reduceMotionRef.current = value;
+    });
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', value => {
+      reduceMotionRef.current = value;
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const onList = screen === 'inbox' || screen === 'topics';
+    const visible = menuOpen && onList && picking === '';
+    if (visible) setMenuShown(true);
+    if (!visible && !onList) {
+      menuProgress.setValue(0);
+      setMenuShown(false);
+      return;
+    }
+    const anim = Animated.timing(menuProgress, {
+      toValue: visible ? 1 : 0,
+      duration: reduceMotionRef.current ? 0 : visible ? 340 : 200,
+      easing: visible ? Easing.bezier(0.16, 1, 0.3, 1) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start(({ finished }) => {
+      if (finished && !menuOpenRef.current) setMenuShown(false);
+    });
+    return () => anim.stop();
+  }, [menuOpen, screen, picking, menuProgress]);
+
+  useEffect(() => {
+    const key = `${screen}|${inboxBy}`;
+    if (motionKey.current === key) return;
+    const previous = motionKey.current.split('|')[0];
+    motionKey.current = key;
+    const sameScreen = previous === screen;
+    const forward = sameScreen || screenDepth(screen) >= screenDepth(previous);
+    enter.setValue(0);
+    enterX.setValue(
+      reduceMotionRef.current || sameScreen ? 0 : forward ? 28 : -28
+    );
+    Animated.parallel([
+      Animated.timing(enter, {
+        toValue: 1,
+        duration: reduceMotionRef.current ? 0 : 260,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(enterX, {
+        toValue: 0,
+        duration: reduceMotionRef.current ? 0 : 260,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [screen, inboxBy, enter, enterX]);
+
+  useEffect(() => {
+    const open = addingTopic && screen === 'topics';
+    if (open) setAddShown(true);
+    const anim = Animated.timing(addProgress, {
+      toValue: open ? 1 : 0,
+      duration: reduceMotionRef.current ? 0 : 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start(({ finished }) => {
+      if (finished && !open) setAddShown(false);
+    });
+    return () => anim.stop();
+  }, [addingTopic, screen, addProgress]);
+
+  const deleteAskRef = useRef(deleteAsk);
+  deleteAskRef.current = deleteAsk;
+  useEffect(() => {
+    if (deleteAsk) {
+      setAskHold(deleteAsk);
+      setAskShown(true);
+    }
+    const anim = Animated.timing(askProgress, {
+      toValue: deleteAsk ? 1 : 0,
+      duration: reduceMotionRef.current ? 0 : deleteAsk ? 240 : 170,
+      easing: deleteAsk ? Easing.bezier(0.16, 1, 0.3, 1) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start(({ finished }) => {
+      if (finished && !deleteAskRef.current) setAskShown(false);
+    });
+    return () => anim.stop();
+  }, [deleteAsk, askProgress]);
+
+  const stripeTop = useMemo(
+    () => ({
+      transform: [
+        {
+          translateY: menuProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0, 4],
+          }),
+        },
+        {
+          rotate: menuProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['0deg', '45deg'],
+          }),
+        },
+      ],
+    }),
+    [menuProgress]
+  );
+  const stripeMid = useMemo(
+    () => ({
+      opacity: menuProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 0],
+      }),
+    }),
+    [menuProgress]
+  );
+  const stripeBot = useMemo(
+    () => ({
+      transform: [
+        {
+          translateY: menuProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0, -4],
+          }),
+        },
+        {
+          rotate: menuProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['0deg', '-45deg'],
+          }),
+        },
+      ],
+    }),
+    [menuProgress]
+  );
+  const menuMotion = useMemo(
+    () => ({
+      opacity: menuProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 1],
+      }),
+    }),
+    [menuProgress]
+  );
+  const scrimOpacity = useMemo(
+    () =>
+      menuProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 0.35],
+      }),
+    [menuProgress]
+  );
+  const titleShift = useMemo(
+    () =>
+      enter.interpolate({
+        inputRange: [0, 1],
+        outputRange: [6, 0],
+      }),
+    [enter]
+  );
+  const addHeight = useMemo(
+    () =>
+      addProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 76],
+      }),
+    [addProgress]
+  );
 
   function domainFor(id: string) {
     let best: { domain: string; expiresAt: number } | null = null;
@@ -245,7 +676,7 @@ function App(): React.JSX.Element {
 
   function topicLabel(id: string) {
     const domain = domainFor(id);
-    return domain ? `${domain} (${id})` : id;
+    return domain ? `${id} (${domain})` : id;
   }
 
   async function loadDomains() {
@@ -268,6 +699,20 @@ function App(): React.JSX.Element {
         if (!raw) return;
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) setSeenIds(parsed.map(String));
+      })
+      .catch(() => {});
+    AsyncStorage.getItem('pinnedTopics')
+      .then(raw => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setPinnedTopics(parsed.map(String));
+      })
+      .catch(() => {});
+    AsyncStorage.getItem('pinnedUsers')
+      .then(raw => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setPinnedUsers(parsed.map(String));
       })
       .catch(() => {});
   }, []);
@@ -363,6 +808,7 @@ function App(): React.JSX.Element {
       time: formatTime(),       // use the same helper we created earlier
       payerId,
       username,
+      profilePic: data.profilePic ? String(data.profilePic) : undefined,
     };
   
     setMessages(prev => {
@@ -438,6 +884,14 @@ function App(): React.JSX.Element {
     await AsyncStorage.removeItem('messages');
   }
 
+  function markAllRead() {
+    setSeenIds(prev => {
+      const next = [...new Set([...prev, ...messages.map(message => message.id)])];
+      AsyncStorage.setItem('seenMessageIds', JSON.stringify(next));
+      return next;
+    });
+  }
+
   async function removeFromServer(body: Record<string, unknown>) {
     if (!walletAddress) return;
     try {
@@ -465,11 +919,26 @@ function App(): React.JSX.Element {
     setPicked([]);
   }
 
+  function revealBar() {
+    setBarOn(true);
+    if (barTimer.current) clearTimeout(barTimer.current);
+    barTimer.current = setTimeout(() => setBarOn(false), 700);
+  }
+
+  function showNotice(title: string, body?: string, tone: 'ok' | 'bad' = 'ok') {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice({ title, body, tone });
+    noticeTimer.current = setTimeout(() => setNotice(null), 2800);
+  }
+
   function confirmDelete(label: string, run: () => void) {
-    Alert.alert(`Delete ${label}?`, undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: run },
-    ]);
+    setMenuOpen(false);
+    setDeleteAsk({ label, run });
+  }
+
+  function confirmUnsubscribe(label: string, run: () => void) {
+    setMenuOpen(false);
+    setDeleteAsk({ label, run, yes: 'Unsubscribe', verb: 'Unsubscribe from' });
   }
 
   function beginPick(kind: 'message' | 'chat', id: string) {
@@ -490,6 +959,22 @@ function App(): React.JSX.Element {
   function cancelPick() {
     setPicking('');
     setPicked([]);
+  }
+
+  function toggleTopicPin(id: string) {
+    setPinnedTopics(prev => {
+      const next = prev.includes(id) ? prev.filter(item => item !== id) : [id, ...prev];
+      rememberPins('pinnedTopics', next);
+      return next;
+    });
+  }
+
+  function toggleUserPin(id: string) {
+    setPinnedUsers(prev => {
+      const next = prev.includes(id) ? prev.filter(item => item !== id) : [id, ...prev];
+      rememberPins('pinnedUsers', next);
+      return next;
+    });
   }
 
   function deletePicked() {
@@ -585,8 +1070,9 @@ function App(): React.JSX.Element {
               body: m.body,
               topicId: m.topic_id,
               time: formatTime(m.created_at),
-              payerId: m.payer || m.payer_account_id || undefined,  // real account
-              username: m.sender || m.username || undefined,        // the handle
+              payerId: m.payer || m.payer_account_id || undefined,
+              username: m.username || m.sender || undefined,
+              profilePic: m.profile_pic || m.profilePic || undefined,
             }))
           );
       }
@@ -681,12 +1167,7 @@ function App(): React.JSX.Element {
       setStatus('Generating connection code...');
       const uri = await getPairingUri();
       setPairingUri(uri);
-      setStatus('Paste code into HashPack');
-
-      Alert.alert(
-        'Connect Wallet',
-        'Copy the code, open HashPack → Connect dApp / WalletConnect → paste the code.'
-      );
+      setStatus('Connect a wallet');
 
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -703,7 +1184,7 @@ function App(): React.JSX.Element {
 
           setPairingUri('');
           setStatus('Ready ✅');
-          Alert.alert('Connected', `Wallet: ${accountId}`);
+          showNotice('Connected', accountId);
           return;
         }
       }
@@ -712,7 +1193,7 @@ function App(): React.JSX.Element {
     } catch (error) {
       console.error(error);
       setStatus('Wallet connection failed');
-      Alert.alert('Error', String(error));
+      showNotice('Could not connect', String(error), 'bad');
     }
   }
 
@@ -809,21 +1290,22 @@ function App(): React.JSX.Element {
           ];
         });
         setTopicId('');
+        setAddingTopic(false);
         setStatus('Ready ✅');
         if (subscribedDomain) loadDomains();
-        Alert.alert(
+        showNotice(
           'Subscribed',
           subscribedDomain
-            ? `${subscribedDomain} (${finalTopicId})`
+            ? `${finalTopicId} · ${subscribedDomain}`
             : `Listening to ${finalTopicId}`
         );
       } else {
         setStatus('Ready ✅');
-        Alert.alert('Not found', data.error || `"${cleaned}" does not exist`);
+        showNotice('Not found', data.error || `"${cleaned}" does not exist`, 'bad');
       }
     } catch (error) {
       setStatus('Ready ✅');
-      Alert.alert('Error', 'Could not reach backend');
+      showNotice('Could not reach backend', 'Check the connection and try again.', 'bad');
     }
   }
 
@@ -844,10 +1326,12 @@ function App(): React.JSX.Element {
       };
       if (data.success) {
         setSubscribedTopics(prev => prev.filter(t => t.topicId !== topic));
-        Alert.alert('Success', `Unsubscribed from ${topic}`);
+        setScreen('topics');
+      } else {
+        showNotice('Could not unsubscribe', data.error || 'Try again.', 'bad');
       }
     } catch (error) {
-      Alert.alert('Error', 'Could not unsubscribe');
+      showNotice('Could not unsubscribe', 'Check the connection and try again.', 'bad');
     }
   }
 
@@ -970,11 +1454,21 @@ function App(): React.JSX.Element {
   const thread = messages.filter(
     message => (message.topicId || message.title) === openTopic
   );
-  const personName =
-    userGroups.find(group => group.id === openUser)?.name || openUser;
+  const openPerson = userGroups.find(group => group.id === openUser);
+  const personName = openPerson?.name || openUser;
+  const personPic = openPerson?.latest.profilePic;
   const personThread = messages.filter(
     message => (message.payerId || message.username || 'Unknown') === openUser
   );
+  const orderedGroups = floatPins(visibleGroups, pinnedTopics, group => group.id);
+  const orderedUsers = floatPins(
+    [...visibleUsers].sort(
+      (a, b) => messageTime(b.latest.time) - messageTime(a.latest.time)
+    ),
+    pinnedUsers,
+    group => group.id
+  );
+  const orderedSubs = floatPins(visibleSubs, pinnedTopics, item => item.topicId);
   const browsing = screen === 'inbox' || screen === 'topics';
   const headerTitle =
     screen === 'person'
@@ -988,18 +1482,58 @@ function App(): React.JSX.Element {
       : 'Inbox';
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" />
+      <SafeAreaView style={styles.container} edges={['top', 'right', 'bottom', 'left']}>
       <View style={styles.header}>
         {picking || !browsing ? (
           <Pressable onPress={picking ? cancelPick : goBack} hitSlop={8}>
             <Text style={styles.back}>{picking ? 'Cancel' : 'Back'}</Text>
           </Pressable>
+        ) : addingTopic && screen === 'topics' ? (
+          <Pressable
+            style={({ pressed }) => [styles.more, pressed && styles.morePressed]}
+            accessibilityLabel="Close"
+            hitSlop={8}
+            onPress={() => {
+              setMenuOpen(false);
+              setAddingTopic(false);
+            }}>
+            <View style={styles.stripes}>
+              <View style={[styles.stripe, styles.stripeTop, styles.xTop]} />
+              <View style={[styles.stripe, styles.stripeMid, styles.xMid]} />
+              <View style={[styles.stripe, styles.stripeBot, styles.xBot]} />
+            </View>
+          </Pressable>
         ) : (
-          <Text style={styles.brand}>Notifier</Text>
+          <Pressable
+            style={({ pressed }) => [styles.more, pressed && styles.morePressed]}
+            accessibilityLabel="More"
+            accessibilityState={{ expanded: menuOpen }}
+            hitSlop={8}
+            onPress={() => {
+              setMenuShown(true);
+              setMenuOpen(open => !open);
+            }}>
+            <View style={styles.stripes}>
+              <Animated.View style={[styles.stripe, styles.stripeTop, stripeTop]} />
+              <Animated.View style={[styles.stripe, styles.stripeMid, stripeMid]} />
+              <Animated.View style={[styles.stripe, styles.stripeBot, stripeBot]} />
+            </View>
+          </Pressable>
         )}
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {picking ? `${picked.length} selected` : headerTitle}
-        </Text>
+        <Animated.View
+          style={[
+            styles.headerCenter,
+            { opacity: enter, transform: [{ translateY: titleShift }] },
+          ]}>
+          {screen === 'person' && !picking ? (
+            <Avatar uri={personPic} size={28} />
+          ) : null}
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {picking ? `${picked.length} selected` : headerTitle}
+          </Text>
+        </Animated.View>
         {picking || screen === 'thread' || screen === 'person' ? (
           <Pressable onPress={picking ? deletePicked : deleteOpenChat} hitSlop={8}>
             <Text style={styles.danger}>Delete</Text>
@@ -1012,6 +1546,10 @@ function App(): React.JSX.Element {
           </Pressable>
         )}
       </View>
+      <View style={styles.body}>
+      <View style={styles.stage} pointerEvents={menuOpen ? 'none' : 'auto'}>
+      <Animated.View
+        style={[styles.stage, { opacity: enter, transform: [{ translateX: enterX }] }]}>
       <Text style={styles.status}>
         {picking
           ? 'Tap more to select'
@@ -1021,6 +1559,28 @@ function App(): React.JSX.Element {
           ? `${subscribedTopics.length} topics · ${status}`
           : status}
       </Text>
+      {screen === 'topics' && !picking ? (
+        <Animated.View
+          style={[styles.composerClip, styles.composerAbove, { opacity: addProgress, maxHeight: addHeight }]}
+          pointerEvents={addingTopic ? 'auto' : 'none'}>
+          {addingTopic || addShown ? (
+            <View style={styles.composer}>
+              <TextInput
+                style={styles.searchInline}
+                placeholder="0.0.12345 or domain"
+                placeholderTextColor="#5e6474"
+                value={topicId}
+                onChangeText={setTopicId}
+                autoCapitalize="none"
+                autoFocus={addingTopic}
+              />
+              <Pressable style={styles.goBtn} onPress={subscribeToTopic}>
+                <Text style={styles.goText}>Add</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </Animated.View>
+      ) : null}
       {browsing && !picking ? (
         <TextInput
           style={styles.search}
@@ -1059,28 +1619,94 @@ function App(): React.JSX.Element {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled">
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={barOn}
+        persistentScrollbar={false}
+        scrollEventThrottle={64}
+        onScroll={revealBar}>
         {screen === 'inbox' && inboxBy === 'user' &&
           (visibleUsers.length === 0 ? (
             <Text style={styles.empty}>
               {messages.length === 0 ? 'No messages yet' : 'No user matches'}
             </Text>
           ) : (
-            visibleUsers
-              .slice()
-              .sort((a, b) => messageTime(b.latest.time) - messageTime(a.latest.time))
-              .map(group => {
+            orderedUsers.map(group => {
                 const topicName = group.latest.topicId
                   ? topicLabel(group.latest.topicId)
-                  : 'Topic';
-                const preview = clipPreview(
-                  `${topicName}: ${previewMeritocracy(group.latest.body)}`
-                );
+                  : 'Unknown topic';
+                const preview = clipPreview(previewMeritocracy(group.latest.body));
                 const unread = group.rows.filter(row => !seenIds.includes(row.id)).length;
                 return (
-                  <Pressable
+                  <View
                     key={group.id}
-                    style={[styles.topicRow, picked.includes(group.id) && styles.pickedRow]}
+                    style={[styles.topicRow, picked.includes(group.id) && styles.pickedRow]}>
+                    <Pressable
+                      style={styles.topicHit}
+                      onLongPress={() =>
+                        picking === 'chat' ? togglePick(group.id) : beginPick('chat', group.id)
+                      }
+                      onPress={() => {
+                        if (picking === 'chat') {
+                          togglePick(group.id);
+                          return;
+                        }
+                        if (picking) return;
+                        setOpenUser(group.id);
+                        setScreen('person');
+                      }}>
+                      <Avatar uri={group.latest.profilePic} size={36} />
+                      <View style={styles.topicCopy}>
+                        <Text style={styles.topicId} numberOfLines={1}>
+                          {group.name}
+                          {group.name !== group.id ? (
+                            <Text style={styles.payer}> {group.id}</Text>
+                          ) : null}
+                        </Text>
+                        <Text style={styles.onTopic} numberOfLines={1}>
+                          {topicName}
+                        </Text>
+                        <Text
+                          style={[styles.preview, unread > 0 && styles.unreadPreview]}
+                          numberOfLines={1}>
+                          {preview}
+                        </Text>
+                      </View>
+                      <View style={styles.topicMeta}>
+                        <Text style={styles.when}>{shortClock(group.latest.time)}</Text>
+                        {unread > 0 ? (
+                          <View style={[styles.count, styles.countHot]}>
+                            <Text style={styles.countHotText}>{unread}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </Pressable>
+                    <PinButton
+                      on={pinnedUsers.includes(group.id)}
+                      label={group.name}
+                      onPress={() => toggleUserPin(group.id)}
+                    />
+                  </View>
+                );
+              })
+          ))}
+
+        {screen === 'inbox' && inboxBy === 'topic' &&
+          (visibleGroups.length === 0 ? (
+            <Text style={styles.empty}>
+              {messages.length === 0 ? 'No messages yet' : 'No topic matches'}
+            </Text>
+          ) : (
+            orderedGroups.map(group => {
+              const preview = clipPreview(
+                `${group.latest.username || group.latest.payerId || 'Someone'}: ${previewMeritocracy(group.latest.body)}`
+              );
+              const unread = group.rows.filter(row => !seenIds.includes(row.id)).length;
+              return (
+                <View
+                  key={group.id}
+                  style={[styles.topicRow, picked.includes(group.id) && styles.pickedRow]}>
+                  <Pressable
+                    style={styles.topicHit}
                     onLongPress={() =>
                       picking === 'chat' ? togglePick(group.id) : beginPick('chat', group.id)
                     }
@@ -1090,18 +1716,18 @@ function App(): React.JSX.Element {
                         return;
                       }
                       if (picking) return;
-                      setOpenUser(group.id);
-                      setScreen('person');
+                      setOpenTopic(group.id);
+                      setScreen('thread');
                     }}>
                     <View style={[styles.dot, { backgroundColor: toneOf(group.latest.body) }]} />
                     <View style={styles.topicCopy}>
                       <Text style={styles.topicId} numberOfLines={1}>
-                        {group.name}
+                        {topicLabel(group.id)}
                       </Text>
                       <Text
                         style={[styles.preview, unread > 0 && styles.unreadPreview]}
                         numberOfLines={1}>
-                        {group.name === group.id ? preview : `${group.id} · ${preview}`}
+                        {preview}
                       </Text>
                     </View>
                     <View style={styles.topicMeta}>
@@ -1113,57 +1739,12 @@ function App(): React.JSX.Element {
                       ) : null}
                     </View>
                   </Pressable>
-                );
-              })
-          ))}
-
-        {screen === 'inbox' && inboxBy === 'topic' &&
-          (visibleGroups.length === 0 ? (
-            <Text style={styles.empty}>
-              {messages.length === 0 ? 'No messages yet' : 'No topic matches'}
-            </Text>
-          ) : (
-            visibleGroups.map(group => {
-              const preview = clipPreview(
-                `${group.latest.username || group.latest.payerId || 'Someone'}: ${previewMeritocracy(group.latest.body)}`
-              );
-              const unread = group.rows.filter(row => !seenIds.includes(row.id)).length;
-              return (
-                <Pressable
-                  key={group.id}
-                  style={[styles.topicRow, picked.includes(group.id) && styles.pickedRow]}
-                  onLongPress={() =>
-                    picking === 'chat' ? togglePick(group.id) : beginPick('chat', group.id)
-                  }
-                  onPress={() => {
-                    if (picking === 'chat') {
-                      togglePick(group.id);
-                      return;
-                    }
-                    if (picking) return;
-                    setOpenTopic(group.id);
-                    setScreen('thread');
-                  }}>
-                  <View style={[styles.dot, { backgroundColor: toneOf(group.latest.body) }]} />
-                  <View style={styles.topicCopy}>
-                    <Text style={styles.topicId} numberOfLines={1}>
-                      {topicLabel(group.id)}
-                    </Text>
-                    <Text
-                      style={[styles.preview, unread > 0 && styles.unreadPreview]}
-                      numberOfLines={1}>
-                      {preview}
-                    </Text>
-                  </View>
-                  <View style={styles.topicMeta}>
-                    <Text style={styles.when}>{shortClock(group.latest.time)}</Text>
-                    {unread > 0 ? (
-                      <View style={[styles.count, styles.countHot]}>
-                        <Text style={styles.countHotText}>{unread}</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                </Pressable>
+                  <PinButton
+                    on={pinnedTopics.includes(group.id)}
+                    label={topicLabel(group.id)}
+                    onPress={() => toggleTopicPin(group.id)}
+                  />
+                </View>
               );
             })
           ))}
@@ -1183,18 +1764,20 @@ function App(): React.JSX.Element {
                 onPress={() => {
                   if (picking === 'message') togglePick(message.id);
                 }}
-                style={[
-                  styles.message,
-                  picking === 'message' && styles.messagePick,
-                  picked.includes(message.id) && styles.pickedRow,
-                ]}>
-                {picking === 'message' ? (
-                  <View style={[styles.tick, picked.includes(message.id) && styles.tickOn]} />
+                style={styles.message}>
+                {picked.includes(message.id) ? (
+                  <View pointerEvents="none" style={styles.messageWash} />
                 ) : null}
                 <View style={styles.messageCopy}>
-                  <Text style={styles.where}>
-                    {topicLabel(message.topicId || message.title || '')}
-                  </Text>
+                  <View style={styles.senderRow}>
+                    <Text style={[styles.where, styles.whereInRow]} numberOfLines={1}>
+                      {topicLabel(message.topicId || message.title || '') ||
+                        'Unknown topic'}
+                    </Text>
+                    {picking === 'message' ? (
+                      <View style={[styles.tick, picked.includes(message.id) && styles.tickOn]} />
+                    ) : null}
+                  </View>
                   <MessageBody
                     raw={message.body}
                     topicId={message.topicId || message.title}
@@ -1221,22 +1804,30 @@ function App(): React.JSX.Element {
                 onPress={() => {
                   if (picking === 'message') togglePick(message.id);
                 }}
-                style={[
-                  styles.message,
-                  picking === 'message' && styles.messagePick,
-                  picked.includes(message.id) && styles.pickedRow,
-                ]}>
-                {picking === 'message' ? (
-                  <View style={[styles.tick, picked.includes(message.id) && styles.tickOn]} />
+                style={styles.message}>
+                {picked.includes(message.id) ? (
+                  <View pointerEvents="none" style={styles.messageWash} />
                 ) : null}
                 <View style={styles.messageCopy}>
-                  {message.username || message.payerId ? (
-                    <Text style={styles.sender}>
-                      {message.username || 'Someone'}
-                      {message.payerId ? (
-                        <Text style={styles.payer}> {message.payerId}</Text>
+                  {message.username || message.payerId || picking === 'message' ? (
+                    <View style={styles.senderRow}>
+                      {message.username || message.payerId ? (
+                        <Avatar uri={message.profilePic} size={28} />
                       ) : null}
-                    </Text>
+                      {message.username || message.payerId ? (
+                        <Text style={styles.sender} numberOfLines={1}>
+                          {message.username || 'Someone'}
+                          {message.payerId ? (
+                            <Text style={styles.payer}> {message.payerId}</Text>
+                          ) : null}
+                        </Text>
+                      ) : (
+                        <View style={styles.sender} />
+                      )}
+                      {picking === 'message' ? (
+                        <View style={[styles.tick, picked.includes(message.id) && styles.tickOn]} />
+                      ) : null}
+                    </View>
                   ) : null}
                   <MessageBody
                     raw={message.body}
@@ -1251,23 +1842,10 @@ function App(): React.JSX.Element {
 
         {screen === 'topics' && (
           <>
-            <View style={styles.composer}>
-              <TextInput
-                style={styles.searchInline}
-                placeholder="0.0.12345 or domain"
-                placeholderTextColor="#5e6474"
-                value={topicId}
-                onChangeText={setTopicId}
-                autoCapitalize="none"
-              />
-              <Pressable style={styles.goBtn} onPress={subscribeToTopic}>
-                <Text style={styles.goText}>Add</Text>
-              </Pressable>
-            </View>
             {visibleSubs.length === 0 ? (
               <Text style={styles.empty}>No topics yet</Text>
             ) : (
-              visibleSubs.map(item => {
+              orderedSubs.map(item => {
                 const mode =
                   item.filterMode === 'allowlist'
                     ? 'Allow list'
@@ -1276,24 +1854,30 @@ function App(): React.JSX.Element {
                     : 'Everyone';
                 const detail = `${mode}${item.showFullMessage ? ' · full text' : ' · sender only'}`;
                 return (
-                <Pressable
-                  key={item.topicId}
-                  style={styles.topicRow}
-                  onPress={() => {
-                    setOpenTopic(item.topicId);
-                    setScreen('settings');
-                  }}>
-                  <View style={[styles.dot, { backgroundColor: '#22d3ee' }]} />
-                  <View style={styles.topicCopy}>
-                    <Text style={styles.topicId} numberOfLines={1}>
-                      {topicLabel(item.topicId)}
-                    </Text>
-                    <Text style={styles.preview} numberOfLines={1}>
-                      {detail}
-                    </Text>
-                  </View>
-                  <Text style={styles.when}>Edit</Text>
-                </Pressable>
+                <View key={item.topicId} style={styles.topicRow}>
+                  <Pressable
+                    style={styles.topicHit}
+                    onPress={() => {
+                      setOpenTopic(item.topicId);
+                      setScreen('settings');
+                    }}>
+                    <View style={[styles.dot, { backgroundColor: '#22d3ee' }]} />
+                    <View style={styles.topicCopy}>
+                      <Text style={styles.topicId} numberOfLines={1}>
+                        {topicLabel(item.topicId)}
+                      </Text>
+                      <Text style={styles.preview} numberOfLines={1}>
+                        {detail}
+                      </Text>
+                    </View>
+                    <Text style={styles.when}>Edit</Text>
+                  </Pressable>
+                  <PinButton
+                    on={pinnedTopics.includes(item.topicId)}
+                    label={topicLabel(item.topicId)}
+                    onPress={() => toggleTopicPin(item.topicId)}
+                  />
+                </View>
                 );
               })
             )}
@@ -1316,82 +1900,72 @@ function App(): React.JSX.Element {
                   thumbColor="#ffffff"
                 />
               </View>
-              <View style={styles.modes}>
-                {(['all', 'allowlist', 'blocklist'] as const).map(mode => (
-                  <Pressable
-                    key={mode}
-                    style={[
-                      openSub.filterMode === mode ? styles.goBtn : styles.quietBtn,
-                      styles.modeBtn,
-                    ]}
-                    onPress={() =>
+              <ModeSwitch
+                mode={
+                  openSub.filterMode === 'allowlist' || openSub.filterMode === 'blocklist'
+                    ? openSub.filterMode
+                    : 'all'
+                }
+                onChange={mode => {
+                  if (mode === openSub.filterMode) return;
+                  updateFilter(
+                    openSub.topicId,
+                    mode,
+                    openSub.allowedSenders || [],
+                    openSub.blockedSenders || []
+                  );
+                }}
+              />
+              <FilterReveal mode={openSub.filterMode}>
+                {openSub.filterMode === 'allowlist' ? (
+                  <FilterList
+                    title="Allowed users"
+                    list={openSub.allowedSenders || []}
+                    onAdd={user =>
+                      updateFilter(openSub.topicId, 'allowlist', [
+                        ...(openSub.allowedSenders || []),
+                        user,
+                      ], openSub.blockedSenders || [])
+                    }
+                    onRemove={user =>
                       updateFilter(
                         openSub.topicId,
-                        mode,
-                        openSub.allowedSenders || [],
+                        'allowlist',
+                        (openSub.allowedSenders || []).filter(entry => entry !== user),
                         openSub.blockedSenders || []
                       )
-                    }>
-                    <Text
-                      style={
-                        openSub.filterMode === mode ? styles.goText : styles.quietText
-                      }>
-                      {mode === 'all'
-                        ? 'Everyone'
-                        : mode === 'allowlist'
-                        ? 'Allow list'
-                        : 'Block list'}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              {openSub.filterMode === 'allowlist' && (
-                <FilterList
-                  title="Allowed users"
-                  list={openSub.allowedSenders || []}
-                  onAdd={user =>
-                    updateFilter(openSub.topicId, 'allowlist', [
-                      ...(openSub.allowedSenders || []),
-                      user,
-                    ], openSub.blockedSenders || [])
-                  }
-                  onRemove={user =>
-                    updateFilter(
-                      openSub.topicId,
-                      'allowlist',
-                      (openSub.allowedSenders || []).filter(entry => entry !== user),
-                      openSub.blockedSenders || []
-                    )
-                  }
-                />
-              )}
-              {openSub.filterMode === 'blocklist' && (
-                <FilterList
-                  title="Blocked users"
-                  list={openSub.blockedSenders || []}
-                  onAdd={user =>
-                    updateFilter(
-                      openSub.topicId,
-                      'blocklist',
-                      openSub.allowedSenders || [],
-                      [...(openSub.blockedSenders || []), user]
-                    )
-                  }
-                  onRemove={user =>
-                    updateFilter(
-                      openSub.topicId,
-                      'blocklist',
-                      openSub.allowedSenders || [],
-                      (openSub.blockedSenders || []).filter(entry => entry !== user)
-                    )
-                  }
-                />
-              )}
+                    }
+                  />
+                ) : openSub.filterMode === 'blocklist' ? (
+                  <FilterList
+                    title="Blocked users"
+                    list={openSub.blockedSenders || []}
+                    onAdd={user =>
+                      updateFilter(
+                        openSub.topicId,
+                        'blocklist',
+                        openSub.allowedSenders || [],
+                        [...(openSub.blockedSenders || []), user]
+                      )
+                    }
+                    onRemove={user =>
+                      updateFilter(
+                        openSub.topicId,
+                        'blocklist',
+                        openSub.allowedSenders || [],
+                        (openSub.blockedSenders || []).filter(entry => entry !== user)
+                      )
+                    }
+                  />
+                ) : null}
+              </FilterReveal>
               <Pressable
                 style={styles.stopWide}
                 onPress={() => {
-                  unsubscribeFromTopic(openSub.topicId);
-                  setScreen('topics');
+                  const topic = openSub.topicId;
+                  confirmUnsubscribe(topicLabel(topic), () => {
+                    unsubscribeFromTopic(topic);
+                  });
                 }}>
                 <Text style={styles.stopText}>Unsubscribe</Text>
               </Pressable>
@@ -1401,22 +1975,30 @@ function App(): React.JSX.Element {
         {screen === 'account' && (
           <View style={styles.sheet}>
             {walletAddress ? (
-              <>
-                <Text style={styles.accountLine}>Connected as {walletAddress}</Text>
+              <View style={styles.connectCard}>
+                <Text style={styles.connectKicker}>Wallet</Text>
+                <Text style={styles.connectTitle}>{walletAddress}</Text>
+                <Text style={styles.accountLine}>
+                  This phone receives messages for this account.
+                </Text>
                 <Pressable style={styles.stopWide} onPress={handleDisconnectWallet}>
                   <Text style={styles.stopText}>Disconnect wallet</Text>
                 </Pressable>
-              </>
+              </View>
             ) : (
-              <>
+              <View style={styles.connectCard}>
+                <Text style={styles.connectTitle}>Connect a wallet</Text>
+                <Text style={styles.accountLine}>
+                  Generate a code, paste it in your wallet, then come back.
+                </Text>
                 <Pressable style={styles.goBtn} onPress={handleConnectWallet}>
-                  <Text style={styles.goText}>Connect wallet</Text>
+                  <Text style={styles.goText}>
+                    {pairingUri ? 'New code' : 'Generate code'}
+                  </Text>
                 </Pressable>
                 {pairingUri ? (
-                  <View style={styles.pairing}>
-                    <Text style={styles.accountLine}>
-                      Pairing code. Paste this into HashPack.
-                    </Text>
+                  <View style={styles.codeBox}>
+                    <Text style={styles.codeLabel}>Pairing code</Text>
                     <Text selectable style={styles.code}>
                       {pairingUri}
                     </Text>
@@ -1424,23 +2006,18 @@ function App(): React.JSX.Element {
                       style={styles.quietBtn}
                       onPress={() => {
                         Clipboard.setString(pairingUri);
-                        Alert.alert(
-                          'Copied',
-                          'Paste this into HashPack â†’ WalletConnect / Connect dApp'
-                        );
+                        showNotice('Copied', 'Paste this into your wallet.');
                       }}>
                       <Text style={styles.quietText}>Copy code</Text>
                     </Pressable>
                   </View>
                 ) : null}
-              </>
+              </View>
             )}
-            <Pressable style={styles.quietWide} onPress={clearAllMessages}>
-              <Text style={styles.quietText}>Clear all messages</Text>
-            </Pressable>
           </View>
         )}
       </ScrollView>
+      </Animated.View>
 
       {browsing ? (
         <View style={styles.nav}>
@@ -1456,7 +2033,105 @@ function App(): React.JSX.Element {
           </Pressable>
         </View>
       ) : null}
-    </SafeAreaView>
+      </View>
+      {menuShown ? (
+        <View style={styles.menuLayer} pointerEvents="box-none">
+          <Animated.View style={[styles.dim, { opacity: scrimOpacity }]}>
+            <Pressable style={styles.dimPress} onPress={() => setMenuOpen(false)} />
+          </Animated.View>
+          <Animated.View style={[styles.menu, menuMotion]}>
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemOn]}
+              onPress={() => {
+                setMenuOpen(false);
+                if (screen === 'topics' && addingTopic) {
+                  setAddingTopic(false);
+                  return;
+                }
+                setScreen('topics');
+                setAddingTopic(true);
+              }}>
+              <Text style={styles.menuText}>Add topic</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemOn]}
+              onPress={() => {
+                setMenuOpen(false);
+                markAllRead();
+              }}>
+              <Text style={styles.menuText}>Mark all as read</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemOn]}
+              onPress={() => {
+                setMenuOpen(false);
+                confirmDelete('all messages', clearAllMessages);
+              }}>
+              <Text style={styles.menuDanger}>Clear all messages</Text>
+            </Pressable>
+          </Animated.View>
+        </View>
+      ) : null}
+      </View>
+      {notice ? (
+        <View pointerEvents="none" style={styles.toastWrap}>
+          <View style={[styles.toast, notice.tone === 'bad' && styles.toastBad]}>
+            <Text style={styles.toastTitle}>{notice.title}</Text>
+            {notice.body ? <Text style={styles.toastBody}>{notice.body}</Text> : null}
+          </View>
+        </View>
+      ) : null}
+      {askShown && askHold ? (
+        <View style={styles.askLayer} pointerEvents={deleteAsk ? 'auto' : 'none'}>
+          <Animated.View style={[styles.askDim, { opacity: askProgress }]}>
+            <Pressable style={styles.dimPress} onPress={() => setDeleteAsk(null)} />
+          </Animated.View>
+          <Animated.View
+            style={[
+              styles.askCard,
+              {
+                opacity: askProgress,
+                transform: [
+                  {
+                    translateY: askProgress.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [14, 0],
+                    }),
+                  },
+                  {
+                    scale: askProgress.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.96, 1],
+                    }),
+                  },
+                ],
+              },
+            ]}>
+            <Text style={styles.askTitle}>{`${askHold.verb || 'Delete'} ${askHold.label}?`}</Text>
+            <Text style={styles.askBody}>
+              {askHold.verb
+                ? `This will unsubscribe from ${askHold.label}.`
+                : `This will delete ${askHold.label}.`}
+            </Text>
+            <View style={styles.askRow}>
+              <Pressable style={styles.askCancel} onPress={() => setDeleteAsk(null)}>
+                <Text style={styles.quietText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={styles.askYes}
+                onPress={() => {
+                  const run = askHold.run;
+                  setDeleteAsk(null);
+                  run();
+                }}>
+                <Text style={styles.askYesText}>{askHold.yes || 'Delete'}</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
+        </View>
+      ) : null}
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -1488,7 +2163,6 @@ function shortClock(time: string) {
 function toneOf(raw: string) {
   const view = classifyMeritocracy(raw);
   if (!view) return '#5e6474';
-  if (view.kind === 'polygon' || view.kind === 'polygon-delete') return '#7c9eff';
   if (view.kind === 'encrypted' || view.kind === 'encrypted-chat') return '#e3c07a';
   return '#22d3ee';
 }
@@ -1502,22 +2176,136 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     gap: 8,
   },
-  brand: {
-    width: 72,
-    color: '#22d3ee',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
+  more: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#22d3ee',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  morePressed: { transform: [{ scale: 0.9 }] },
+  stripes: { width: 13, height: 10 },
+  stripe: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: '#062226',
+  },
+  stripeTop: { top: 0 },
+  stripeMid: { top: 4 },
+  stripeBot: { top: 8 },
+  xTop: { transform: [{ translateY: 4 }, { rotate: '45deg' }] },
+  xMid: { opacity: 0 },
+  xBot: { transform: [{ translateY: -4 }, { rotate: '-45deg' }] },
+  body: { flex: 1 },
+  stage: { flex: 1 },
+  menuLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
+  },
+  dim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+  },
+  dimPress: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+  menu: {
+    position: 'absolute',
+    top: 6,
+    left: 12,
+    minWidth: 220,
+    backgroundColor: '#12141a',
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.28)',
+    borderRadius: 16,
+    paddingVertical: 6,
+    overflow: 'hidden',
+    elevation: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    transformOrigin: '24px 0px',
+  },
+  menuItem: { paddingVertical: 12, paddingHorizontal: 14 },
+  menuItemOn: { backgroundColor: 'rgba(34,211,238,0.1)' },
+  menuText: { color: '#e6e6f0', fontSize: 15, fontWeight: '600' },
+  menuDanger: { color: '#f07178', fontSize: 15, fontWeight: '600' },
+  askLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  askDim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  askCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#12141a',
+    borderWidth: 1,
+    borderColor: 'rgba(240,113,120,0.45)',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
+  },
+  askTitle: { color: '#e6e6f0', fontSize: 17, fontWeight: '700', marginBottom: 8 },
+  askBody: { color: '#8d93a5', fontSize: 14, lineHeight: 20, marginBottom: 16 },
+  askRow: { flexDirection: 'row', gap: 8 },
+  askCancel: {
+    flex: 1,
+    backgroundColor: '#12141a',
+    borderWidth: 1,
+    borderColor: 'rgba(230,230,240,0.08)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  askYes: {
+    flex: 1,
+    backgroundColor: '#f07178',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  askYesText: { color: '#2a0c0e', fontWeight: '700', fontSize: 14 },
   back: { minWidth: 72, color: '#22d3ee', fontSize: 15, fontWeight: '600' },
   danger: { color: '#f07178', fontSize: 15, fontWeight: '700' },
-  headerTitle: {
+  headerCenter: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  headerTitle: {
+    flexShrink: 1,
     color: '#e6e6f0',
     fontSize: 17,
     fontWeight: '700',
-    textAlign: 'center',
   },
   chip: {
     maxWidth: 110,
@@ -1547,11 +2335,26 @@ const styles = StyleSheet.create({
   topicRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 2,
+    paddingVertical: 0,
+    paddingRight: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(230,230,240,0.08)',
+  },
+  topicHit: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
     paddingVertical: 12,
     paddingHorizontal: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(230,230,240,0.08)',
+    minWidth: 0,
+  },
+  pinBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
   topicCopy: { flex: 1 },
@@ -1562,6 +2365,8 @@ const styles = StyleSheet.create({
   topicMeta: { alignItems: 'flex-end' },
   when: { color: '#5e6474', fontSize: 12 },
   where: { color: '#22d3ee', fontSize: 12, fontWeight: '700', marginBottom: 6 },
+  whereInRow: { flex: 1, marginBottom: 0 },
+  onTopic: { color: '#22d3ee', fontSize: 12, fontWeight: '700', marginTop: 3 },
   groupRow: {
     flexDirection: 'row',
     gap: 8,
@@ -1581,8 +2386,16 @@ const styles = StyleSheet.create({
   countText: { color: '#22d3ee', fontSize: 11, fontWeight: '700' },
   countHot: { backgroundColor: '#22d3ee' },
   countHotText: { color: '#062226', fontSize: 11, fontWeight: '700' },
-  message: { paddingVertical: 10 },
-  messagePick: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  message: { paddingVertical: 10, position: 'relative' },
+  messageWash: {
+    position: 'absolute',
+    top: 4,
+    bottom: 4,
+    left: 0,
+    right: 0,
+    borderRadius: 16,
+    backgroundColor: 'rgba(34,211,238,0.1)',
+  },
   messageCopy: { flex: 1 },
   tick: {
     width: 20,
@@ -1590,12 +2403,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 2,
     borderColor: '#5e6474',
-    marginTop: 8,
+    marginLeft: 'auto',
   },
   tickOn: { backgroundColor: '#22d3ee', borderColor: '#22d3ee' },
-  sender: { color: '#e6e6f0', fontWeight: '700', fontSize: 13, marginBottom: 6 },
+  senderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  sender: { color: '#e6e6f0', fontWeight: '700', fontSize: 13, flexShrink: 1, flex: 1 },
   payer: { color: '#5e6474', fontWeight: '500' },
-  time: { color: '#5e6474', fontSize: 11, marginTop: 6 },
+  time: { color: '#5e6474', fontSize: 11, marginTop: 6, textAlign: 'right' },
   chatBubble: {
     backgroundColor: '#181c24',
     borderRadius: 14,
@@ -1628,7 +2447,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 4,
   },
-  kindBlue: { color: '#7c9eff' },
   kindGold: { color: '#e3c07a' },
   cardTitle: { color: '#e6e6f0', fontSize: 18, fontWeight: '700', marginBottom: 6 },
   cord: { color: '#8d93a5', fontSize: 12, marginTop: 8 },
@@ -1650,6 +2468,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   openText: { color: '#062226', fontWeight: '700', fontSize: 13 },
+  composerClip: { overflow: 'hidden' },
+  composerAbove: { marginHorizontal: 16 },
   composer: { flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 8 },
   searchInline: {
     flex: 1,
@@ -1705,8 +2525,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   stopText: { color: '#f07178', fontWeight: '700' },
-  modes: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  modes: { flexDirection: 'row', gap: 8, marginBottom: 8, position: 'relative' },
   modeBtn: { flex: 1 },
+  modePill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 12,
+    backgroundColor: '#22d3ee',
+  },
+  modeHit: {
+    borderWidth: 1,
+    borderColor: 'rgba(230,230,240,0.08)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  modeHitOn: { borderColor: 'transparent' },
+  modeOnText: { color: '#062226', fontWeight: '700', fontSize: 13 },
+  modeOffText: { color: '#e6e6f0', fontWeight: '600', fontSize: 13 },
   line: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1738,16 +2578,69 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(230,230,240,0.08)',
   },
   personName: { color: '#e6e6f0', fontSize: 15, flex: 1 },
-  accountLine: { color: '#8d93a5', fontSize: 15, lineHeight: 22, marginBottom: 12 },
-  pairing: { marginTop: 16 },
-  code: {
-    color: '#8d93a5',
-    fontSize: 12,
+  accountLine: { color: '#8d93a5', fontSize: 15, lineHeight: 22, marginBottom: 14 },
+  connectCard: {
     backgroundColor: '#12141a',
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.28)',
+    borderRadius: 16,
+    padding: 16,
+  },
+  connectKicker: {
+    color: '#22d3ee',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  connectTitle: {
+    color: '#e6e6f0',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  codeBox: {
+    marginTop: 14,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: 'rgba(230,230,240,0.08)',
     borderRadius: 12,
     padding: 12,
-    marginBottom: 10,
   },
+  codeLabel: {
+    color: '#5e6474',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  code: {
+    color: '#e6e6f0',
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 12,
+  },
+  toastWrap: {
+    position: 'absolute',
+    top: 52,
+    left: 16,
+    right: 16,
+    zIndex: 35,
+  },
+  toast: {
+    backgroundColor: '#12141a',
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.45)',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  toastBad: { borderColor: 'rgba(240,113,120,0.55)' },
+  toastTitle: { color: '#e6e6f0', fontSize: 15, fontWeight: '700' },
+  toastBody: { color: '#8d93a5', fontSize: 13, lineHeight: 18, marginTop: 4 },
   empty: { color: '#8d93a5', textAlign: 'center', paddingVertical: 28 },
   nav: {
     flexDirection: 'row',
