@@ -39,6 +39,13 @@ import {
   placeUrl,
   type MeritocracyView,
 } from './meritocracyFormat';
+import {
+  DUMMY_FOLLOWING,
+  USE_DUMMY_SUGGESTIONS,
+  dummyResolve,
+  type FollowingResponse,
+  type ResolveResponse,
+} from './devDummySuggestions';
 
 const BACKEND_URL = 'https://hedera-notifications-backend-production.up.railway.app';
 const DEFAULT_AVATAR =
@@ -91,6 +98,62 @@ function floatPins<T>(rows: T[], pins: string[], idOf: (row: T) => string) {
 
 function rememberPins(key: string, next: string[]) {
   AsyncStorage.setItem(key, JSON.stringify(next)).catch(() => {});
+}
+
+function isAbort(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function withSignal(signal: AbortSignal): RequestInit {
+  return { signal } as RequestInit;
+}
+
+function waitFor(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function SuggestionRow({
+  title,
+  detail,
+  avatar,
+  onPress,
+}: {
+  title: string;
+  detail: string;
+  avatar: string;
+  onPress: () => void;
+}) {
+  return (
+    <View style={styles.topicRow}>
+      <Pressable style={styles.topicHit} onPress={onPress}>
+        <Avatar uri={avatar} />
+        <View style={styles.topicCopy}>
+          <Text style={styles.topicId} numberOfLines={1}>
+            {title}
+          </Text>
+          {detail ? (
+            <Text style={styles.preview} numberOfLines={1}>
+              {detail}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+    </View>
+  );
 }
 
 function Avatar({ uri, size = 32 }: { uri?: string; size?: number }) {
@@ -476,6 +539,10 @@ function App(): React.JSX.Element {
   const [domainRows, setDomainRows] = useState<
     { domain: string; topicId: string; expiresAt: number }[]
   >([]);
+  const [suggestions, setSuggestions] = useState<FollowingResponse | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [resolved, setResolved] = useState<ResolveResponse | null>(null);
+  const [resolveLoading, setResolveLoading] = useState(false);
   const menuProgress = useRef(new Animated.Value(0)).current;
   const [menuShown, setMenuShown] = useState(false);
   const enter = useRef(new Animated.Value(1)).current;
@@ -564,6 +631,93 @@ function App(): React.JSX.Element {
     });
     return () => anim.stop();
   }, [addingTopic, screen, addProgress]);
+
+  useEffect(() => {
+    const open = addingTopic && screen === 'topics';
+    if (!open || (!USE_DUMMY_SUGGESTIONS && !/^0\.0\.\d+$/.test(walletAddress))) {
+      setSuggestions(null);
+      setSuggestLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    let alive = true;
+    setSuggestLoading(true);
+    (async () => {
+      try {
+        if (USE_DUMMY_SUGGESTIONS) {
+          await waitFor(300, controller.signal);
+          if (!alive) return;
+          setSuggestions(DUMMY_FOLLOWING);
+        } else {
+          const response = await fetch(
+            `${BACKEND_URL}/api/following/${encodeURIComponent(walletAddress)}`,
+            withSignal(controller.signal),
+          );
+          const data = (await response.json()) as FollowingResponse & {
+            success?: boolean;
+          };
+          if (!alive) return;
+          setSuggestions(
+            response.ok && data.success
+              ? {
+                  success: true,
+                  accounts: Array.isArray(data.accounts) ? data.accounts : [],
+                  topics: Array.isArray(data.topics) ? data.topics : [],
+                }
+              : { success: true, accounts: [], topics: [] },
+          );
+        }
+      } catch (error) {
+        if (!alive || isAbort(error)) return;
+        setSuggestions({ success: true, accounts: [], topics: [] });
+      } finally {
+        if (alive) setSuggestLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [addingTopic, screen, walletAddress]);
+
+  useEffect(() => {
+    const id = topicId.trim();
+    const open = addingTopic && screen === 'topics' && /^0\.0\.\d+$/.test(id);
+    if (!open) {
+      setResolved(null);
+      setResolveLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    let alive = true;
+    setResolveLoading(true);
+    setResolved(null);
+    (async () => {
+      try {
+        let data: ResolveResponse;
+        if (USE_DUMMY_SUGGESTIONS) {
+          data = await dummyResolve(id, controller.signal);
+        } else {
+          const response = await fetch(
+            `${BACKEND_URL}/api/resolve/${encodeURIComponent(id)}`,
+            withSignal(controller.signal),
+          );
+          data = (await response.json()) as ResolveResponse;
+        }
+        if (!alive) return;
+        setResolved(data);
+      } catch (error) {
+        if (!alive || isAbort(error)) return;
+        setResolved({ success: false, error: 'Not found' });
+      } finally {
+        if (alive) setResolveLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [addingTopic, screen, topicId]);
 
   const deleteAskRef = useRef(deleteAsk);
   deleteAskRef.current = deleteAsk;
@@ -1240,13 +1394,13 @@ function App(): React.JSX.Element {
     }
   }
 
-  async function subscribeToTopic() {
+  async function subscribeToTopic(raw?: unknown) {
     if (!token || !walletAddress) {
       Alert.alert('Error', 'Connect your wallet first');
       return;
     }
 
-    const cleaned = topicId.trim();
+    const cleaned = (typeof raw === 'string' ? raw : topicId).trim();
     if (!cleaned) {
       Alert.alert('Error', 'Enter a topic ID or name');
       return;
@@ -1469,6 +1623,57 @@ function App(): React.JSX.Element {
     group => group.id
   );
   const orderedSubs = floatPins(visibleSubs, pinnedTopics, item => item.topicId);
+  const takenTopics = new Set(subscribedTopics.map(item => item.topicId));
+  const suggestionRows = (suggestions?.accounts || [])
+    .filter(account => account.topic && !takenTopics.has(account.topic))
+    .map(account => ({
+      key: `account:${account.id}`,
+      title: account.username || account.id,
+      detail: account.id,
+      avatar: account.avatar || '',
+      topic: account.topic,
+    }))
+    .concat(
+      (suggestions?.topics || [])
+        .filter(topic => topic.id && !takenTopics.has(topic.id))
+        .map(topic => ({
+          key: `topic:${topic.id}`,
+          title: topic.name || topic.id,
+          detail: topic.name ? topic.id : '',
+          avatar: '',
+          topic: topic.id,
+        })),
+    );
+  const resolveRow =
+    resolved && resolved.success && resolved.topicId && !takenTopics.has(resolved.topicId)
+      ? resolved.kind === 'account'
+        ? {
+            key: `resolve:${resolved.accountId}`,
+            title: resolved.username || resolved.accountId,
+            detail: resolved.accountId,
+            avatar: resolved.profilePic || '',
+            topic: resolved.topicId,
+          }
+        : {
+            key: `resolve:${resolved.topicId}`,
+            title: resolved.domain
+              ? `${resolved.topicId} (${resolved.domain})`
+              : resolved.topicId,
+            detail: resolved.domain ? resolved.topicId : '',
+            avatar: '',
+            topic: resolved.topicId,
+          }
+      : null;
+  const resolveError = resolved && !resolved.success ? resolved.error : '';
+
+  function chooseSuggestion(topic: string) {
+    if (USE_DUMMY_SUGGESTIONS) {
+      setTopicId(topic);
+      return;
+    }
+    setTopicId(topic);
+    subscribeToTopic(topic).catch(() => {});
+  }
   const browsing = screen === 'inbox' || screen === 'topics';
   const headerTitle =
     screen === 'person'
@@ -1839,6 +2044,35 @@ function App(): React.JSX.Element {
               </Pressable>
             ))
           ))}
+
+        {screen === 'topics' && addingTopic ? (
+          <>
+            {suggestLoading || resolveLoading ? (
+              <Text style={styles.preview}>Loading...</Text>
+            ) : null}
+            {resolveError ? (
+              <Text style={styles.preview}>{resolveError}</Text>
+            ) : null}
+            {resolveRow ? (
+              <SuggestionRow
+                key={resolveRow.key}
+                title={resolveRow.title}
+                detail={resolveRow.detail}
+                avatar={resolveRow.avatar}
+                onPress={() => chooseSuggestion(resolveRow.topic)}
+              />
+            ) : null}
+            {suggestionRows.map(row => (
+              <SuggestionRow
+                key={row.key}
+                title={row.title}
+                detail={row.detail}
+                avatar={row.avatar}
+                onPress={() => chooseSuggestion(row.topic)}
+              />
+            ))}
+          </>
+        ) : null}
 
         {screen === 'topics' && (
           <>
