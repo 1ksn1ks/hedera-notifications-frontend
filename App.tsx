@@ -242,10 +242,12 @@ function NftHolderList({
   list,
   onChange,
   confirmRemove,
+  onNotice,
 }: {
   list: string[];
   onChange: (next: string[]) => void;
   confirmRemove: (label: string, run: () => void) => void;
+  onNotice: (title: string) => void;
 }) {
   const [input, setInput] = useState('');
 
@@ -279,7 +281,16 @@ function NftHolderList({
           style={styles.goBtn}
           onPress={() => {
             const value = input.trim();
-            if (!TOKEN_ID.test(value) || list.includes(value) || list.length >= MAX_REQUIRED_NFTS) {
+            if (!TOKEN_ID.test(value)) {
+              onNotice('Use a token id like 0.0.12345');
+              return;
+            }
+            if (list.includes(value)) {
+              onNotice('That NFT is already on the list');
+              return;
+            }
+            if (list.length >= MAX_REQUIRED_NFTS) {
+              onNotice('Up to 20 NFTs per topic');
               return;
             }
             onChange([...list, value]);
@@ -2526,6 +2537,7 @@ function App(): React.JSX.Element {
                 list={openSub.requiredNfts || []}
                 onChange={next => updateRequiredNfts(openSub.topicId, next)}
                 confirmRemove={confirmRemove}
+                onNotice={title => showNotice(title, undefined, 'bad')}
               />
               <Pressable
                 style={styles.stopWide}
