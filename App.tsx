@@ -236,6 +236,29 @@ function FilterList({
 const FILTER_MODES = ['all', 'allowlist', 'blocklist'] as const;
 const FILTER_LABELS = ['Everyone', 'Allow list', 'Block list'] as const;
 
+type SubscriptionOwner = {
+  accountId: string;
+  username: string;
+  profilePic: string;
+};
+
+// A missing owner is an old backend response, so the row stays a plain topic.
+function subscriptionOwner(value: unknown): SubscriptionOwner | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as {
+    accountId?: unknown;
+    username?: unknown;
+    profilePic?: unknown;
+  };
+  const accountId = typeof row.accountId === 'string' ? row.accountId : '';
+  if (!accountId) return null;
+  return {
+    accountId,
+    username: typeof row.username === 'string' ? row.username : '',
+    profilePic: typeof row.profilePic === 'string' ? row.profilePic : '',
+  };
+}
+
 function ModeSwitch({
   mode,
   onChange,
@@ -510,6 +533,7 @@ function App(): React.JSX.Element {
       filterMode: string;
       allowedSenders: string[];
       blockedSenders: string[];
+      owner: SubscriptionOwner | null;
     }[]
   >([]);
   const [messages, setMessages] = useState<
@@ -530,6 +554,7 @@ function App(): React.JSX.Element {
   const [openTopic, setOpenTopic] = useState('');
   const [openUser, setOpenUser] = useState('');
   const [inboxBy, setInboxBy] = useState<'topic' | 'user'>('user');
+  const [topicsBy, setTopicsBy] = useState<'user' | 'topic'>('user');
   const [pinnedTopics, setPinnedTopics] = useState<string[]>([]);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
   const [topicQuery, setTopicQuery] = useState('');
@@ -552,7 +577,7 @@ function App(): React.JSX.Element {
   const askProgress = useRef(new Animated.Value(0)).current;
   const [askShown, setAskShown] = useState(false);
   const [askHold, setAskHold] = useState<typeof deleteAsk>(null);
-  const motionKey = useRef(`${screen}|${inboxBy}`);
+  const motionKey = useRef(`${screen}|${inboxBy}|${topicsBy}`);
   const reduceMotionRef = useRef(false);
   const barTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [barOn, setBarOn] = useState(false);
@@ -591,7 +616,7 @@ function App(): React.JSX.Element {
   }, [menuOpen, screen, picking, menuProgress]);
 
   useEffect(() => {
-    const key = `${screen}|${inboxBy}`;
+    const key = `${screen}|${inboxBy}|${topicsBy}`;
     if (motionKey.current === key) return;
     const previous = motionKey.current.split('|')[0];
     motionKey.current = key;
@@ -615,7 +640,7 @@ function App(): React.JSX.Element {
         useNativeDriver: true,
       }),
     ]).start();
-  }, [screen, inboxBy, enter, enterX]);
+  }, [screen, inboxBy, topicsBy, enter, enterX]);
 
   useEffect(() => {
     const open = addingTopic && screen === 'topics';
@@ -1375,17 +1400,19 @@ function App(): React.JSX.Element {
           filter_mode?: string;
           allowed_senders?: string[];
           blocked_senders?: string[];
+          owner?: unknown;
         }[];
         error?: string;
       };
 
       if (data.success && data.subscriptions) {
-        const topics = data.subscriptions.map((s: any) => ({
+        const topics = data.subscriptions.map(s => ({
           topicId: s.topic_id,
           showFullMessage: s.show_full_message ?? true,
           filterMode: s.filter_mode || 'all',
           allowedSenders: s.allowed_senders || [],
           blockedSenders: s.blocked_senders || [],
+          owner: subscriptionOwner(s.owner),
         }));
         setSubscribedTopics(topics);
       }
@@ -1440,6 +1467,7 @@ function App(): React.JSX.Element {
               filterMode: 'all',
               allowedSenders: [],
               blockedSenders: [],
+              owner: null,
             },
           ];
         });
@@ -1587,12 +1615,16 @@ function App(): React.JSX.Element {
       (group.latest.username || '').toLowerCase().includes(needle)
     );
   });
-  const visibleSubs = subscribedTopics.filter(
-    item =>
-      !needle ||
+  const visibleSubs = subscribedTopics.filter(item => {
+    if (!needle) return true;
+    const owner = item.owner;
+    return (
       item.topicId.toLowerCase().includes(needle) ||
-      domainFor(item.topicId).toLowerCase().includes(needle)
-  );
+      domainFor(item.topicId).toLowerCase().includes(needle) ||
+      (owner?.username || '').toLowerCase().includes(needle) ||
+      (owner?.accountId || '').toLowerCase().includes(needle)
+    );
+  });
   const openSub = subscribedTopics.find(item => item.topicId === openTopic);
   const visibleUsers = userGroups.filter(group => {
     if (!needle) return true;
@@ -1622,7 +1654,16 @@ function App(): React.JSX.Element {
     pinnedUsers,
     group => group.id
   );
-  const orderedSubs = floatPins(visibleSubs, pinnedTopics, item => item.topicId);
+  const orderedUserSubs = floatPins(
+    visibleSubs.filter(item => item.owner),
+    pinnedTopics,
+    item => item.topicId
+  );
+  const orderedTopicSubs = floatPins(
+    visibleSubs.filter(item => !item.owner),
+    pinnedTopics,
+    item => item.topicId
+  );
   const takenTopics = new Set(subscribedTopics.map(item => item.topicId));
   const suggestionRows = (suggestions?.accounts || [])
     .filter(account => account.topic && !takenTopics.has(account.topic))
@@ -1816,6 +1857,30 @@ function App(): React.JSX.Element {
             }}>
             <Text style={inboxBy === 'topic' ? styles.goText : styles.quietText}>
               By topic
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {screen === 'topics' && !picking ? (
+        <View style={styles.groupRow}>
+          <Pressable
+            style={[topicsBy === 'user' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
+            onPress={() => {
+              setTopicsBy('user');
+              if (picking === 'chat') cancelPick();
+            }}>
+            <Text style={topicsBy === 'user' ? styles.goText : styles.quietText}>
+              Users
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[topicsBy === 'topic' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
+            onPress={() => {
+              setTopicsBy('topic');
+              if (picking === 'chat') cancelPick();
+            }}>
+            <Text style={topicsBy === 'topic' ? styles.goText : styles.quietText}>
+              Topics
             </Text>
           </Pressable>
         </View>
@@ -2074,12 +2139,59 @@ function App(): React.JSX.Element {
           </>
         ) : null}
 
-        {screen === 'topics' && (
+        {screen === 'topics' && topicsBy === 'user' && (
           <>
-            {visibleSubs.length === 0 ? (
+            {orderedUserSubs.length === 0 ? (
+              <Text style={styles.empty}>No users yet</Text>
+            ) : (
+              orderedUserSubs.map(item => {
+                const owner = item.owner;
+                if (!owner) return null;
+                const mode =
+                  item.filterMode === 'allowlist'
+                    ? 'Allow list'
+                    : item.filterMode === 'blocklist'
+                    ? 'Block list'
+                    : 'Everyone';
+                const detail = `${mode}${item.showFullMessage ? ' · full text' : ' · sender only'}`;
+                const name = owner.username || owner.accountId;
+                return (
+                <View key={item.topicId} style={styles.topicRow}>
+                  <Pressable
+                    style={styles.topicHit}
+                    onPress={() => {
+                      setOpenTopic(item.topicId);
+                      setScreen('settings');
+                    }}>
+                    <Avatar uri={owner.profilePic} size={36} />
+                    <View style={styles.topicCopy}>
+                      <Text style={styles.topicId} numberOfLines={1}>
+                        {name}
+                      </Text>
+                      <Text style={styles.preview} numberOfLines={1}>
+                        {`${owner.accountId} · ${detail}`}
+                      </Text>
+                    </View>
+                    <Text style={styles.when}>Edit</Text>
+                  </Pressable>
+                  <PinButton
+                    on={pinnedTopics.includes(item.topicId)}
+                    label={name}
+                    onPress={() => toggleTopicPin(item.topicId)}
+                  />
+                </View>
+                );
+              })
+            )}
+          </>
+        )}
+
+        {screen === 'topics' && topicsBy === 'topic' && (
+          <>
+            {orderedTopicSubs.length === 0 ? (
               <Text style={styles.empty}>No topics yet</Text>
             ) : (
-              orderedSubs.map(item => {
+              orderedTopicSubs.map(item => {
                 const mode =
                   item.filterMode === 'allowlist'
                     ? 'Allow list'
