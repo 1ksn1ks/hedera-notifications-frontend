@@ -233,6 +233,55 @@ function FilterList({
   );
 }
 
+const TOKEN_ID = /^0\.0\.\d+$/;
+const MAX_REQUIRED_NFTS = 20;
+
+function NftHolderList({
+  list,
+  onChange,
+}: {
+  list: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [input, setInput] = useState('');
+
+  return (
+    <View style={styles.filterBlock}>
+      <Text style={styles.label}>Only notify from holders of</Text>
+      {list.map(token => (
+        <View key={token} style={styles.person}>
+          <Text style={styles.personName}>{token}</Text>
+          <Pressable
+            style={styles.stopBtn}
+            onPress={() => onChange(list.filter(item => item !== token))}>
+            <Text style={styles.stopText}>Remove</Text>
+          </Pressable>
+        </View>
+      ))}
+      <TextInput
+        style={styles.input}
+        placeholder="0.0.12345"
+        placeholderTextColor="#5e6474"
+        value={input}
+        onChangeText={setInput}
+        autoCapitalize="none"
+      />
+      <Pressable
+        style={styles.goBtn}
+        onPress={() => {
+          const value = input.trim();
+          if (!TOKEN_ID.test(value) || list.includes(value) || list.length >= MAX_REQUIRED_NFTS) {
+            return;
+          }
+          onChange([...list, value]);
+          setInput('');
+        }}>
+        <Text style={styles.goText}>Add</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 const FILTER_MODES = ['all', 'allowlist', 'blocklist'] as const;
 const FILTER_LABELS = ['Everyone', 'Allow list', 'Block list'] as const;
 
@@ -257,6 +306,23 @@ function subscriptionOwner(value: unknown): SubscriptionOwner | null {
     username: typeof row.username === 'string' ? row.username : '',
     profilePic: typeof row.profilePic === 'string' ? row.profilePic : '',
   };
+}
+
+function subscriptionDetail(item: {
+  filterMode: string;
+  showFullMessage: boolean;
+  requiredNfts?: string[];
+}) {
+  const mode =
+    item.filterMode === 'allowlist'
+      ? 'Allow list'
+      : item.filterMode === 'blocklist'
+      ? 'Block list'
+      : 'Everyone';
+  const detail = `${mode}${item.showFullMessage ? ' · full text' : ' · sender only'}`;
+  return item.requiredNfts && item.requiredNfts.length > 0
+    ? `${detail}  NFT holders`
+    : detail;
 }
 
 function ModeSwitch({
@@ -533,6 +599,7 @@ function App(): React.JSX.Element {
       filterMode: string;
       allowedSenders: string[];
       blockedSenders: string[];
+      requiredNfts: string[];
       owner: SubscriptionOwner | null;
     }[]
   >([]);
@@ -1400,6 +1467,7 @@ function App(): React.JSX.Element {
           filter_mode?: string;
           allowed_senders?: string[];
           blocked_senders?: string[];
+          required_nfts?: unknown;
           owner?: unknown;
         }[];
         error?: string;
@@ -1412,6 +1480,9 @@ function App(): React.JSX.Element {
           filterMode: s.filter_mode || 'all',
           allowedSenders: s.allowed_senders || [],
           blockedSenders: s.blocked_senders || [],
+          requiredNfts: Array.isArray(s.required_nfts)
+            ? s.required_nfts.filter((item): item is string => typeof item === 'string')
+            : [],
           owner: subscriptionOwner(s.owner),
         }));
         setSubscribedTopics(topics);
@@ -1467,6 +1538,7 @@ function App(): React.JSX.Element {
               filterMode: 'all',
               allowedSenders: [],
               blockedSenders: [],
+              requiredNfts: [],
               owner: null,
             },
           ];
@@ -1567,6 +1639,45 @@ function App(): React.JSX.Element {
       );
     } catch (error) {
       Alert.alert('Error', 'Could not update filter');
+    }
+  }
+
+  async function updateRequiredNfts(topic: string, next: string[]) {
+    const previous =
+      subscribedTopics.find(item => item.topicId === topic)?.requiredNfts || [];
+    setSubscribedTopics(prev =>
+      prev.map(item =>
+        item.topicId === topic ? { ...item, requiredNfts: next } : item
+      )
+    );
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/update-filter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletAddress,
+          topicId: topic,
+          requiredNfts: next,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        success?: boolean;
+        error?: string;
+      } | null;
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || 'Could not update filter');
+      }
+    } catch (error) {
+      setSubscribedTopics(prev =>
+        prev.map(item =>
+          item.topicId === topic ? { ...item, requiredNfts: previous } : item
+        )
+      );
+      showNotice(
+        'Could not save',
+        error instanceof Error ? error.message : 'Could not update filter',
+        'bad',
+      );
     }
   }
 
@@ -2147,13 +2258,7 @@ function App(): React.JSX.Element {
               orderedUserSubs.map(item => {
                 const owner = item.owner;
                 if (!owner) return null;
-                const mode =
-                  item.filterMode === 'allowlist'
-                    ? 'Allow list'
-                    : item.filterMode === 'blocklist'
-                    ? 'Block list'
-                    : 'Everyone';
-                const detail = `${mode}${item.showFullMessage ? ' · full text' : ' · sender only'}`;
+                const detail = subscriptionDetail(item);
                 const name = owner.username || owner.accountId;
                 return (
                 <View key={item.topicId} style={styles.topicRow}>
@@ -2192,13 +2297,7 @@ function App(): React.JSX.Element {
               <Text style={styles.empty}>No topics yet</Text>
             ) : (
               orderedTopicSubs.map(item => {
-                const mode =
-                  item.filterMode === 'allowlist'
-                    ? 'Allow list'
-                    : item.filterMode === 'blocklist'
-                    ? 'Block list'
-                    : 'Everyone';
-                const detail = `${mode}${item.showFullMessage ? ' · full text' : ' · sender only'}`;
+                const detail = subscriptionDetail(item);
                 return (
                 <View key={item.topicId} style={styles.topicRow}>
                   <Pressable
@@ -2305,6 +2404,10 @@ function App(): React.JSX.Element {
                   />
                 ) : null}
               </FilterReveal>
+              <NftHolderList
+                list={openSub.requiredNfts || []}
+                onChange={next => updateRequiredNfts(openSub.topicId, next)}
+              />
               <Pressable
                 style={styles.stopWide}
                 onPress={() => {
