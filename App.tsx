@@ -241,9 +241,11 @@ const MAX_REQUIRED_NFTS = 20;
 function NftHolderList({
   list,
   onChange,
+  confirmRemove,
 }: {
   list: string[];
   onChange: (next: string[]) => void;
+  confirmRemove: (label: string, run: () => void) => void;
 }) {
   const [input, setInput] = useState('');
 
@@ -255,31 +257,37 @@ function NftHolderList({
           <Text style={styles.personName}>{token}</Text>
           <Pressable
             style={styles.stopBtn}
-            onPress={() => onChange(list.filter(item => item !== token))}>
+            onPress={() =>
+              confirmRemove(`NFT ${token}`, () =>
+                onChange(list.filter(item => item !== token)),
+              )
+            }>
             <Text style={styles.stopText}>Remove</Text>
           </Pressable>
         </View>
       ))}
-      <TextInput
-        style={styles.input}
-        placeholder="NFT token id (0.0.12345)"
-        placeholderTextColor="#5e6474"
-        value={input}
-        onChangeText={setInput}
-        autoCapitalize="none"
-      />
-      <Pressable
-        style={styles.goBtn}
-        onPress={() => {
-          const value = input.trim();
-          if (!TOKEN_ID.test(value) || list.includes(value) || list.length >= MAX_REQUIRED_NFTS) {
-            return;
-          }
-          onChange([...list, value]);
-          setInput('');
-        }}>
-        <Text style={styles.goText}>Add</Text>
-      </Pressable>
+      <View style={styles.composer}>
+        <TextInput
+          style={styles.searchInline}
+          placeholder="NFT token id (0.0.12345)"
+          placeholderTextColor="#5e6474"
+          value={input}
+          onChangeText={setInput}
+          autoCapitalize="none"
+        />
+        <Pressable
+          style={styles.goBtn}
+          onPress={() => {
+            const value = input.trim();
+            if (!TOKEN_ID.test(value) || list.includes(value) || list.length >= MAX_REQUIRED_NFTS) {
+              return;
+            }
+            onChange([...list, value]);
+            setInput('');
+          }}>
+          <Text style={styles.goText}>Add</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1228,6 +1236,11 @@ function App(): React.JSX.Element {
   function confirmUnsubscribe(label: string, run: () => void) {
     setMenuOpen(false);
     setDeleteAsk({ label, run, yes: 'Unsubscribe', verb: 'Unsubscribe from' });
+  }
+
+  function confirmRemove(label: string, run: () => void) {
+    setMenuOpen(false);
+    setDeleteAsk({ label, run, yes: 'Remove', verb: 'Remove' });
   }
 
   function beginPick(kind: 'message' | 'chat', id: string) {
@@ -2487,6 +2500,7 @@ function App(): React.JSX.Element {
               <NftHolderList
                 list={openSub.requiredNfts || []}
                 onChange={next => updateRequiredNfts(openSub.topicId, next)}
+                confirmRemove={confirmRemove}
               />
               <Pressable
                 style={styles.stopWide}
@@ -2638,7 +2652,9 @@ function App(): React.JSX.Element {
             ]}>
             <Text style={styles.askTitle}>{`${askHold.verb || 'Delete'} ${askHold.label}?`}</Text>
             <Text style={styles.askBody}>
-              {askHold.verb
+              {askHold.verb === 'Remove'
+                ? `This will remove ${askHold.label}.`
+                : askHold.verb
                 ? `This will unsubscribe from ${askHold.label}.`
                 : `This will delete ${askHold.label}.`}
             </Text>
