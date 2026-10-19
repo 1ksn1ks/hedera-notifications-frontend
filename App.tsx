@@ -529,7 +529,7 @@ function App(): React.JSX.Element {
   >('inbox');
   const [openTopic, setOpenTopic] = useState('');
   const [openUser, setOpenUser] = useState('');
-  const [inboxBy, setInboxBy] = useState<'topic' | 'user'>('topic');
+  const [inboxBy, setInboxBy] = useState<'topic' | 'user'>('user');
   const [pinnedTopics, setPinnedTopics] = useState<string[]>([]);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
   const [topicQuery, setTopicQuery] = useState('');
@@ -1799,16 +1799,6 @@ function App(): React.JSX.Element {
       {screen === 'inbox' && !picking ? (
         <View style={styles.groupRow}>
           <Pressable
-            style={[inboxBy === 'topic' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
-            onPress={() => {
-              setInboxBy('topic');
-              if (picking === 'chat') cancelPick();
-            }}>
-            <Text style={inboxBy === 'topic' ? styles.goText : styles.quietText}>
-              By topic
-            </Text>
-          </Pressable>
-          <Pressable
             style={[inboxBy === 'user' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
             onPress={() => {
               setInboxBy('user');
@@ -1816,6 +1806,16 @@ function App(): React.JSX.Element {
             }}>
             <Text style={inboxBy === 'user' ? styles.goText : styles.quietText}>
               By user
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[inboxBy === 'topic' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
+            onPress={() => {
+              setInboxBy('topic');
+              if (picking === 'chat') cancelPick();
+            }}>
+            <Text style={inboxBy === 'topic' ? styles.goText : styles.quietText}>
+              By topic
             </Text>
           </Pressable>
         </View>
