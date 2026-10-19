@@ -17,6 +17,8 @@ import {
   Animated,
   Easing,
   AccessibilityInfo,
+  Keyboard,
+  BackHandler,
 } from 'react-native';
 import {
   initialWindowMetrics,
@@ -625,6 +627,9 @@ function App(): React.JSX.Element {
   const [pinnedTopics, setPinnedTopics] = useState<string[]>([]);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
   const [topicQuery, setTopicQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchShown, setSearchShown] = useState(false);
+  const [findSize, setFindSize] = useState(0);
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const [picking, setPicking] = useState<'' | 'message' | 'chat'>('');
   const [picked, setPicked] = useState<string[]>([]);
@@ -641,6 +646,7 @@ function App(): React.JSX.Element {
   const enterX = useRef(new Animated.Value(0)).current;
   const addProgress = useRef(new Animated.Value(0)).current;
   const [addShown, setAddShown] = useState(false);
+  const searchProgress = useRef(new Animated.Value(0)).current;
   const askProgress = useRef(new Animated.Value(0)).current;
   const [askShown, setAskShown] = useState(false);
   const [askHold, setAskHold] = useState<typeof deleteAsk>(null);
@@ -723,6 +729,35 @@ function App(): React.JSX.Element {
     });
     return () => anim.stop();
   }, [addingTopic, screen, addProgress]);
+
+  useEffect(() => {
+    const open =
+      searchOpen && (screen === 'inbox' || screen === 'topics') && picking === '';
+    if (open) setSearchShown(true);
+    const anim = Animated.timing(searchProgress, {
+      toValue: open ? 1 : 0,
+      duration: reduceMotionRef.current ? 0 : 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start(({ finished }) => {
+      if (finished && !open) setSearchShown(false);
+    });
+    return () => anim.stop();
+  }, [searchOpen, screen, picking, searchProgress]);
+
+  useEffect(() => {
+    const open =
+      searchOpen && (screen === 'inbox' || screen === 'topics') && picking === '';
+    if (!open) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setSearchOpen(false);
+      setTopicQuery('');
+      Keyboard.dismiss();
+      return true;
+    });
+    return () => sub.remove();
+  }, [searchOpen, screen, picking]);
 
   useEffect(() => {
     const open = addingTopic && screen === 'topics';
@@ -909,6 +944,14 @@ function App(): React.JSX.Element {
         outputRange: [0, 76],
       }),
     [addProgress]
+  );
+  const searchHeight = useMemo(
+    () =>
+      searchProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 80],
+      }),
+    [searchProgress]
   );
 
   function domainFor(id: string) {
@@ -1827,6 +1870,32 @@ function App(): React.JSX.Element {
     subscribeToTopic(topic).catch(() => {});
   }
   const browsing = screen === 'inbox' || screen === 'topics';
+  function rememberModeHeight(height: number) {
+    const next = Math.round(height);
+    setFindSize(size => (size === next ? size : next));
+  }
+  function closeSearch() {
+    setSearchOpen(false);
+    setTopicQuery('');
+    Keyboard.dismiss();
+  }
+  const findButton = (
+    <Pressable
+      accessibilityLabel="Find"
+      style={[
+        searchOpen ? styles.goBtn : styles.quietBtn,
+        styles.findBtn,
+        findSize > 0
+          ? { width: findSize, height: findSize, paddingVertical: 0, paddingHorizontal: 0 }
+          : null,
+      ]}
+      onPress={() => {
+        if (searchOpen) closeSearch();
+        else setSearchOpen(true);
+      }}>
+      <Text style={searchOpen ? styles.goText : styles.quietText}>🔍</Text>
+    </Pressable>
+  );
   const headerTitle =
     screen === 'person'
       ? personName
@@ -1939,19 +2008,27 @@ function App(): React.JSX.Element {
         </Animated.View>
       ) : null}
       {browsing && !picking ? (
-        <TextInput
-          style={styles.search}
-          placeholder="Find a topic or domain"
-          placeholderTextColor="#5e6474"
-          value={topicQuery}
-          onChangeText={setTopicQuery}
-          autoCapitalize="none"
-        />
+        <Animated.View
+          style={[styles.composerClip, { opacity: searchProgress, maxHeight: searchHeight }]}
+          pointerEvents={searchOpen ? 'auto' : 'none'}>
+          {searchOpen || searchShown ? (
+            <TextInput
+              style={styles.search}
+              placeholder="Find a topic or domain"
+              placeholderTextColor="#5e6474"
+              value={topicQuery}
+              onChangeText={setTopicQuery}
+              autoCapitalize="none"
+              autoFocus={searchOpen}
+            />
+          ) : null}
+        </Animated.View>
       ) : null}
       {screen === 'inbox' && !picking ? (
         <View style={styles.groupRow}>
           <Pressable
             style={[inboxBy === 'user' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
+            onLayout={event => rememberModeHeight(event.nativeEvent.layout.height)}
             onPress={() => {
               setInboxBy('user');
               if (picking === 'chat') cancelPick();
@@ -1970,12 +2047,14 @@ function App(): React.JSX.Element {
               By topic
             </Text>
           </Pressable>
+          {findButton}
         </View>
       ) : null}
       {screen === 'topics' && !picking ? (
         <View style={styles.groupRow}>
           <Pressable
             style={[topicsBy === 'user' ? styles.goBtn : styles.quietBtn, styles.modeBtn]}
+            onLayout={event => rememberModeHeight(event.nativeEvent.layout.height)}
             onPress={() => {
               setTopicsBy('user');
               if (picking === 'chat') cancelPick();
@@ -1994,6 +2073,7 @@ function App(): React.JSX.Element {
               Topics
             </Text>
           </Pressable>
+          {findButton}
         </View>
       ) : null}
 
@@ -2976,6 +3056,12 @@ const styles = StyleSheet.create({
   stopText: { color: '#f07178', fontWeight: '700' },
   modes: { flexDirection: 'row', gap: 8, marginBottom: 8, position: 'relative' },
   modeBtn: { flex: 1 },
+  findBtn: {
+    flexGrow: 0,
+    flexShrink: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   modePill: {
     position: 'absolute',
     left: 0,
