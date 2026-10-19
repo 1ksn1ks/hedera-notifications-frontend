@@ -630,6 +630,8 @@ function App(): React.JSX.Element {
   >('inbox');
   const [openTopic, setOpenTopic] = useState('');
   const [openUser, setOpenUser] = useState('');
+  const [settingsOwner, setSettingsOwner] = useState<SubscriptionOwner | null>(null);
+  const [settingsFrom, setSettingsFrom] = useState<'user' | 'topic'>('topic');
   const [inboxBy, setInboxBy] = useState<'topic' | 'user'>('user');
   const [topicsBy, setTopicsBy] = useState<'user' | 'topic'>('user');
   const [pinnedTopics, setPinnedTopics] = useState<string[]>([]);
@@ -1636,6 +1638,7 @@ function App(): React.JSX.Element {
       };
       if (data.success) {
         setSubscribedTopics(prev => prev.filter(t => t.topicId !== topic));
+        setTopicsBy(settingsFrom);
         setScreen('topics');
       } else {
         showNotice('Could not unsubscribe', data.error || 'Try again.', 'bad');
@@ -1738,7 +1741,12 @@ function App(): React.JSX.Element {
   }
 
   function goBack() {
-    setScreen(screen === 'settings' ? 'topics' : 'inbox');
+    if (screen === 'settings') {
+      setTopicsBy(settingsFrom);
+      setScreen('topics');
+      return;
+    }
+    setScreen('inbox');
   }
 
   const topicGroups = (() => {
@@ -1909,9 +1917,14 @@ function App(): React.JSX.Element {
       <Text style={searchOpen ? styles.goText : styles.quietText}>🔍</Text>
     </Pressable>
   );
+  const settingsName = settingsOwner
+    ? settingsOwner.username || settingsOwner.accountId
+    : '';
   const headerTitle =
     screen === 'person'
       ? personName
+      : screen === 'settings' && settingsOwner
+      ? settingsName
       : screen === 'thread' || screen === 'settings'
       ? topicLabel(openTopic)
       : screen === 'topics'
@@ -1968,6 +1981,8 @@ function App(): React.JSX.Element {
           ]}>
           {screen === 'person' && !picking ? (
             <Avatar uri={personPic} size={28} />
+          ) : screen === 'settings' && settingsOwner ? (
+            <Avatar uri={settingsOwner.profilePic} size={28} />
           ) : null}
           <Text style={styles.headerTitle} numberOfLines={1}>
             {picking ? `${picked.length} selected` : headerTitle}
@@ -1989,11 +2004,17 @@ function App(): React.JSX.Element {
       <View style={styles.stage} pointerEvents={menuOpen ? 'none' : 'auto'}>
       <Animated.View
         style={[styles.stage, { opacity: enter, transform: [{ translateX: enterX }] }]}>
-      <Text style={styles.status}>
+      <Text
+        style={[
+          styles.status,
+          screen === 'settings' && settingsOwner ? styles.statusCenter : null,
+        ]}>
         {picking
           ? 'Tap more to select'
           : screen === 'thread' || screen === 'person'
           ? 'Hold a message to select'
+          : screen === 'settings' && settingsOwner
+          ? `${settingsOwner.accountId}  ${openTopic}`
           : browsing
           ? `${subscribedTopics.length} topics · ${status}`
           : status}
@@ -2359,6 +2380,8 @@ function App(): React.JSX.Element {
                     style={styles.topicHit}
                     onPress={() => {
                       setOpenTopic(item.topicId);
+                      setSettingsOwner(owner);
+                      setSettingsFrom('user');
                       setScreen('settings');
                     }}>
                     <Avatar uri={owner.profilePic} size={36} />
@@ -2397,6 +2420,8 @@ function App(): React.JSX.Element {
                     style={styles.topicHit}
                     onPress={() => {
                       setOpenTopic(item.topicId);
+                      setSettingsOwner(null);
+                      setSettingsFrom('topic');
                       setScreen('settings');
                     }}>
                     <View style={[styles.dot, { backgroundColor: '#22d3ee' }]} />
@@ -2506,9 +2531,14 @@ function App(): React.JSX.Element {
                 style={styles.stopWide}
                 onPress={() => {
                   const topic = openSub.topicId;
-                  confirmUnsubscribe(topicLabel(topic), () => {
-                    unsubscribeFromTopic(topic);
-                  });
+                  confirmUnsubscribe(
+                    settingsOwner
+                      ? settingsOwner.username || settingsOwner.accountId
+                      : topicLabel(topic),
+                    () => {
+                      unsubscribeFromTopic(topic);
+                    }
+                  );
                 }}>
                 <Text style={styles.stopText}>Unsubscribe</Text>
               </Pressable>
@@ -2863,6 +2893,7 @@ const styles = StyleSheet.create({
   },
   chipText: { color: '#e6e6f0', fontSize: 12, fontWeight: '700' },
   status: { color: '#5e6474', fontSize: 12, marginHorizontal: 16, marginBottom: 8, marginTop: 6 },
+  statusCenter: { textAlign: 'center' },
   search: {
     marginHorizontal: 16,
     marginBottom: 8,
