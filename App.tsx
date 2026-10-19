@@ -249,7 +249,7 @@ function NftHolderList({
 
   return (
     <View style={styles.filterBlock}>
-      <Text style={styles.label}>Only notify from holders of</Text>
+      <Text style={styles.label}>Only notify from holders of NFT</Text>
       {list.map(token => (
         <View key={token} style={styles.person}>
           <Text style={styles.personName}>{token}</Text>
@@ -262,7 +262,7 @@ function NftHolderList({
       ))}
       <TextInput
         style={styles.input}
-        placeholder="0.0.12345"
+        placeholder="NFT token id (0.0.12345)"
         placeholderTextColor="#5e6474"
         value={input}
         onChangeText={setInput}
