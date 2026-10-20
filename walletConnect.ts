@@ -51,6 +51,35 @@ export async function getPairingUri(): Promise<string> {
   });
 }
 
+function hexEncode(text: string): string {
+  return Array.from(new TextEncoder().encode(text))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Sign a message with the connected Hedera wallet and return the
+// signature as a hex string (used to prove wallet ownership on register).
+export async function signMessage(
+  message: string,
+  account: string
+): Promise<string> {
+  if (!provider?.session) throw new Error('No wallet session');
+
+  const result: any = await provider.request({
+    method: 'hedera_signMessage',
+    params: [{ message: hexEncode(message) }],
+    account: `hedera:mainnet:${account}`,
+  });
+
+  const value =
+    result && typeof result === 'object'
+      ? result.signature || result.hex || ''
+      : result;
+  const text = String(value ?? '');
+  if (!text) throw new Error('Wallet returned no signature');
+  return text.replace(/^0x/, '');
+}
+
 export async function getConnectedAccount(): Promise<string | null> {
   if (!provider?.session) return null;
 

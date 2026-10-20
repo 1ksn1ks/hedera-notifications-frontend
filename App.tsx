@@ -34,6 +34,7 @@ import {
   getPairingUri,
   getConnectedAccount,
   disconnectWallet,
+  signMessage,
 } from './walletConnect';
 import {
   classifyMeritocracy,
@@ -1471,6 +1472,24 @@ function App(): React.JSX.Element {
     // The browser preview has no FCM token and /api/register requires one,
     // so there is nothing to register on the web.
     if (Platform.OS === 'web') return;
+
+    // Prove wallet ownership before registering: fetch a challenge nonce,
+    // have the connected wallet sign it, and send nonce + signature.
+    let nonce = '';
+    let signature = '';
+    try {
+      const challengeRes = await fetch(
+        `${BACKEND_URL}/api/register/challenge?account=${encodeURIComponent(wallet)}`
+      );
+      if (challengeRes.ok) {
+        const challenge = (await challengeRes.json()) as { nonce?: string };
+        nonce = challenge.nonce || '';
+        if (nonce) signature = await signMessage(nonce, wallet);
+      }
+    } catch (error) {
+      console.log('challenge or signing failed', error);
+    }
+
     await fetch(`${BACKEND_URL}/api/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1478,6 +1497,8 @@ function App(): React.JSX.Element {
         deviceToken,
         platform: 'android',
         walletAddress: wallet,
+        nonce,
+        signature,
       }),
     });
   }
