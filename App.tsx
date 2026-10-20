@@ -53,6 +53,18 @@ import {
 // web runs same-origin through the Vite dev proxy (the production API
 // sends no CORS headers); native keeps the production backend.
 const BACKEND_URL = Platform.OS === 'web' ? '' : 'https://hedera-notifications-backend-production.up.railway.app';
+
+// Wallet-owned writes carry the session token issued at register time.
+async function apiPost(path: string, body: object) {
+  const headers: { [key: string]: string } = { 'Content-Type': 'application/json' };
+  const sessionToken = await AsyncStorage.getItem('sessionToken');
+  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+  return fetch(`${BACKEND_URL}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
 const DEFAULT_AVATAR =
   'https://kiloscribe.com/api/inscription-cdn/0.0.4819119';
 
@@ -1183,11 +1195,7 @@ function App(): React.JSX.Element {
   async function clearAllMessages() {
     try {
       if (walletAddress) {
-        await fetch(`${BACKEND_URL}/api/messages/clear`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ walletAddress }),
-        });
+        await apiPost('/api/messages/clear', { walletAddress });
       }
     } catch (e) {
       console.log('clear server messages failed', e);
@@ -1208,11 +1216,7 @@ function App(): React.JSX.Element {
   async function removeFromServer(body: Record<string, unknown>) {
     if (!walletAddress) return;
     try {
-      await fetch(`${BACKEND_URL}/api/messages/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddress, ...body }),
-      });
+      await apiPost('/api/messages/delete', { walletAddress, ...body });
     } catch (error) {
       console.log('delete messages failed', error);
     }
@@ -1490,7 +1494,7 @@ function App(): React.JSX.Element {
       console.log('challenge or signing failed', error);
     }
 
-    await fetch(`${BACKEND_URL}/api/register`, {
+    const response = await fetch(`${BACKEND_URL}/api/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1501,6 +1505,10 @@ function App(): React.JSX.Element {
         signature,
       }),
     });
+    if (response.ok) {
+      const data = (await response.json()) as { token?: string };
+      if (data.token) await AsyncStorage.setItem('sessionToken', data.token);
+    }
   }
 
   async function handleConnectWallet() {
@@ -1623,14 +1631,10 @@ function App(): React.JSX.Element {
     try {
       setStatus('Checking topic...');
 
-      const response = await fetch(`${BACKEND_URL}/api/subscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceToken: token,
-          topicId: cleaned,
-          walletAddress,
-        }),
+      const response = await apiPost('/api/subscribe', {
+        deviceToken: token,
+        topicId: cleaned,
+        walletAddress,
       });
 
       const data = (await response.json()) as {
@@ -1681,13 +1685,9 @@ function App(): React.JSX.Element {
 
   async function unsubscribeFromTopic(topic: string) {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/unsubscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress,
-          topicId: topic,
-        }),
+      const response = await apiPost('/api/unsubscribe', {
+        walletAddress,
+        topicId: topic,
       });
 
       const data = (await response.json()) as {
@@ -1714,14 +1714,10 @@ function App(): React.JSX.Element {
     );
 
     try {
-      await fetch(`${BACKEND_URL}/api/update-preference`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress,
-          topicId: topic,
-          showFullMessage: value,
-        }),
+      await apiPost('/api/update-preference', {
+        walletAddress,
+        topicId: topic,
+        showFullMessage: value,
       });
     } catch (error) {
       console.error('Failed to save preference');
@@ -1735,16 +1731,12 @@ function App(): React.JSX.Element {
     blockedSenders: string[] = []
   ) {
     try {
-      await fetch(`${BACKEND_URL}/api/update-filter`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress,
-          topicId,
-          filterMode,
-          allowedSenders,
-          blockedSenders,
-        }),
+      await apiPost('/api/update-filter', {
+        walletAddress,
+        topicId,
+        filterMode,
+        allowedSenders,
+        blockedSenders,
       });
 
       setSubscribedTopics(prev =>
@@ -1768,14 +1760,10 @@ function App(): React.JSX.Element {
       )
     );
     try {
-      const response = await fetch(`${BACKEND_URL}/api/update-filter`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          walletAddress,
-          topicId: topic,
-          requiredNfts: next,
-        }),
+      const response = await apiPost('/api/update-filter', {
+        walletAddress,
+        topicId: topic,
+        requiredNfts: next,
       });
       const data = (await response.json().catch(() => null)) as {
         success?: boolean;
