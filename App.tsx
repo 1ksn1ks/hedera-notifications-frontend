@@ -1468,6 +1468,9 @@ function App(): React.JSX.Element {
   }
 
   async function registerToken(deviceToken: string, wallet: string) {
+    // The browser preview has no FCM token and /api/register requires one,
+    // so there is nothing to register on the web.
+    if (Platform.OS === 'web') return;
     await fetch(`${BACKEND_URL}/api/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1493,8 +1496,12 @@ function App(): React.JSX.Element {
           await AsyncStorage.setItem('walletAddress', accountId);
           setWalletAddress(accountId);
 
-          if (token) {
-            await registerToken(token, accountId);
+          // The web preview has no token, but the wallet's existing
+          // subscriptions and messages still load.
+          if (token || Platform.OS === 'web') {
+            if (token) {
+              await registerToken(token, accountId);
+            }
             await loadSubscriptions(accountId);
             await loadMessages(accountId);
           }
@@ -1564,6 +1571,23 @@ function App(): React.JSX.Element {
   }
 
   async function subscribeToTopic(raw?: unknown) {
+    if (Platform.OS === 'web') {
+      // Alert.alert is a no-op in the browser, so the preview uses the
+      // in-app toast for both messages.
+      if (!walletAddress) {
+        showNotice('Connect your wallet first');
+        return;
+      }
+      // The browser preview has no FCM token and /api/subscribe requires one,
+      // so a topic cannot be subscribed from here.
+      showNotice(
+        'Browser preview',
+        'Push alerts only work in the phone app, this is the browser preview',
+        'bad'
+      );
+      return;
+    }
+
     if (!token || !walletAddress) {
       Alert.alert('Error', 'Connect your wallet first');
       return;
