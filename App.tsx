@@ -1477,6 +1477,11 @@ function App(): React.JSX.Element {
     // so there is nothing to register on the web.
     if (Platform.OS === 'web') return;
 
+    // This wallet + push-token pair already registered on this device, so
+    // do not ask the wallet to sign again on every launch.
+    const savedRegister = await AsyncStorage.getItem('registerKey');
+    if (savedRegister === `${wallet}:${deviceToken}`) return;
+
     // Prove wallet ownership before registering: fetch a challenge nonce,
     // have the connected wallet sign it, and send nonce + signature.
     let nonce = '';
@@ -1488,26 +1493,40 @@ function App(): React.JSX.Element {
       if (challengeRes.ok) {
         const challenge = (await challengeRes.json()) as { nonce?: string };
         nonce = challenge.nonce || '';
-        if (nonce) signature = await signMessage(nonce, wallet);
       }
     } catch (error) {
-      console.log('challenge or signing failed', error);
+      console.log('challenge failed', error);
+    }
+    if (nonce) {
+      try {
+        signature = await signMessage(nonce, wallet);
+      } catch (error) {
+        console.log('challenge signing failed', error);
+      }
     }
 
-    const response = await fetch(`${BACKEND_URL}/api/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviceToken,
-        platform: 'android',
-        walletAddress: wallet,
-        nonce,
-        signature,
-      }),
-    });
-    if (response.ok) {
+    // Only send the proof when both halves were obtained; a nonce with an
+    // empty signature used to 401 on every cold start.
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceToken,
+          platform: 'android',
+          walletAddress: wallet,
+          ...(nonce && signature ? { nonce, signature } : {}),
+        }),
+      });
+      if (!response.ok) {
+        console.log('register failed with', response.status);
+        return;
+      }
       const data = (await response.json()) as { token?: string };
       if (data.token) await AsyncStorage.setItem('sessionToken', data.token);
+      await AsyncStorage.setItem('registerKey', `${wallet}:${deviceToken}`);
+    } catch (error) {
+      console.log('register failed', error);
     }
   }
 
