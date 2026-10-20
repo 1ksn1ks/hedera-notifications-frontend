@@ -58,6 +58,31 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5174,
     strictPort: true,
+    fs: {
+      // Setting fs.deny replaces Vite's defaults, so re-include them
+      // (Vite 8: .env, .env.*, *.{crt,pem,key,p12,pfx,cer,der}, .npmrc,
+      // .yarnrc.yml, **/.git/**).
+      // Patterns are matched with picomatch against ABSOLUTE file paths:
+      // slash-less patterns get **/ prepended automatically, but patterns
+      // containing a slash are used as-is — so gitignore-style 'android/'
+      // or '/*.keystore' would match nothing. Hence the **/ prefixes.
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key,p12,pfx,cer,der}',
+        '.npmrc',
+        '.yarnrc.yml',
+        '**/.git/**',
+        '**/android/**',
+        '**/ios/**',
+        '**/*.keystore',
+        '**/*.jks',
+        '**/keystore.properties',
+        '**/google-services.json',
+        '**/GoogleService-Info.plist',
+        '**/.env*',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'https://hedera-notifications-backend-production.up.railway.app',
