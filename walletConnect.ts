@@ -57,8 +57,11 @@ function hexEncode(text: string): string {
     .join('');
 }
 
-// Sign a message with the connected Hedera wallet and return the
-// signature as a hex string (used to prove wallet ownership on register).
+// Sign a message with the connected Hedera wallet (used to prove wallet
+// ownership on register). hedera_signMessage (HIP-820) answers with
+// { signatureMap } — a base64 protobuf SignatureMap — which is sent to the
+// backend as-is (it signs the message with the
+// "\x19Hedera Signed Message:\n" + length prefix).
 export async function signMessage(
   message: string,
   account: string
@@ -71,13 +74,11 @@ export async function signMessage(
     account: `hedera:mainnet:${account}`,
   });
 
-  const value =
-    result && typeof result === 'object'
-      ? result.signature || result.hex || ''
-      : result;
-  const text = String(value ?? '');
+  const signatureMap =
+    result && typeof result === 'object' ? result.signatureMap : result;
+  const text = String(signatureMap ?? '');
   if (!text) throw new Error('Wallet returned no signature');
-  return text.replace(/^0x/, '');
+  return text;
 }
 
 export async function getConnectedAccount(): Promise<string | null> {
