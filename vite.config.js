@@ -57,7 +57,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5174,
-    strictPort: true,
+    // If 5174 is taken, move to the next free port and print it — never
+    // stop whatever else is holding the port.
+    strictPort: false,
     fs: {
       // Setting fs.deny replaces Vite's defaults, so re-include them
       // (Vite 8: .env, .env.*, *.{crt,pem,key,p12,pfx,cer,der}, .npmrc,

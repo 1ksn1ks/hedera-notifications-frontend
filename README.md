@@ -73,7 +73,25 @@ When you want to forcefully reload, for example to reset the state of your app, 
 - **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
 - **iOS**: Press <kbd>R</kbd> in iOS Simulator.
 
-## Congratulations! :tada:
+## Browser preview (web)
+
+The app also runs in a regular browser via [react-native-web](https://necolas.github.io/react-native-web/):
+
+```sh
+npm run start:web
+```
+
+This starts a Vite dev server on **port 5174** (host `0.0.0.0`, so it is reachable over the network too, e.g. via Tailscale at `http://100.112.248.72:5174/`).
+
+If 5174 is already in use, Vite moves to the **next free port** (`strictPort: false` in `vite.config.js`) and **prints the port it picked in the terminal** — look for the `Local: http://localhost:NNNN/` line and use that port. Do not stop another process to free 5174; use the port Vite printed.
+
+Notes for the browser preview:
+
+- No push alerts — there is no FCM token, so subscribing to a topic shows the notice "Push alerts only work in the phone app, this is the browser preview" instead.
+- `server.fs.deny` blocks serving of native signing/config files (`android/`, `ios/`, `*.keystore`, `*.jks`, `keystore.properties`, `google-services.json`, `GoogleService-Info.plist`, `.env*`).
+- `/api` requests are proxied to the production backend, so no CORS setup is needed.
+
+# Congratulations! :tada:
 
 You've successfully run and modified your React Native App. :partying_face:
 
