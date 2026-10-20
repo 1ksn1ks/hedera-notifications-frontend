@@ -13,3 +13,11 @@ export const PermissionsAndroid = {
   request: async () => 'granted',
   requestMultiple: async () => ({}),
 };
+
+// react-native-web has no TurboModuleRegistry. Native modules don't exist in
+// the browser, so lookups return null (safe-area-context tolerates a null
+// native module; react-native-svg's are never consumed on web).
+export const TurboModuleRegistry = {
+  get: () => null,
+  getEnforcing: () => null,
+};

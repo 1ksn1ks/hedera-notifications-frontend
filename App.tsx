@@ -49,7 +49,9 @@ import {
   type ResolveResponse,
 } from './devDummySuggestions';
 
-const BACKEND_URL = 'https://hedera-notifications-backend-production.up.railway.app';
+// web runs same-origin through the Vite dev proxy (the production API
+// sends no CORS headers); native keeps the production backend.
+const BACKEND_URL = Platform.OS === 'web' ? '' : 'https://hedera-notifications-backend-production.up.railway.app';
 const DEFAULT_AVATAR =
   'https://kiloscribe.com/api/inscription-cdn/0.0.4819119';
 
