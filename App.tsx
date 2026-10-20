@@ -782,18 +782,46 @@ function App(): React.JSX.Element {
     return () => anim.stop();
   }, [searchOpen, screen, picking, searchProgress]);
 
+  // Android back button/gesture: close the topmost open layer first
+  // (confirm dialog, picking, search, add-topic composer, menu), then walk
+  // sub-views back up (settings/thread/person/account -> their parent,
+  // topics -> inbox). Only the inbox with nothing open returns false so
+  // Android does its normal exit/background.
   useEffect(() => {
-    const open =
-      searchOpen && (screen === 'inbox' || screen === 'topics') && picking === '';
-    if (!open) return;
+    if (Platform.OS === 'web') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      setSearchOpen(false);
-      setTopicQuery('');
-      Keyboard.dismiss();
-      return true;
+      if (deleteAsk) {
+        setDeleteAsk(null);
+        return true;
+      }
+      if (picking) {
+        cancelPick();
+        return true;
+      }
+      if (searchOpen) {
+        closeSearch();
+        return true;
+      }
+      if (addingTopic && screen === 'topics') {
+        setAddingTopic(false);
+        return true;
+      }
+      if (menuOpen) {
+        setMenuOpen(false);
+        return true;
+      }
+      if (screen !== 'inbox' && screen !== 'topics') {
+        goBack();
+        return true;
+      }
+      if (screen === 'topics') {
+        setScreen('inbox');
+        return true;
+      }
+      return false;
     });
     return () => sub.remove();
-  }, [searchOpen, screen, picking]);
+  }, [deleteAsk, picking, searchOpen, addingTopic, menuOpen, screen, settingsFrom]);
 
   useEffect(() => {
     const open = addingTopic && screen === 'topics';
