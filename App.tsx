@@ -1416,8 +1416,12 @@ function App(): React.JSX.Element {
 
   async function loadMessages(wallet: string) {
     try {
+      const headers: { [key: string]: string } = {};
+      const sessionToken = await AsyncStorage.getItem('sessionToken');
+      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
       const res = await fetch(
-        `${BACKEND_URL}/api/messages/${encodeURIComponent(wallet)}`
+        `${BACKEND_URL}/api/messages/${encodeURIComponent(wallet)}`,
+        { headers }
       );
       const data = (await res.json()) as {
         success?: boolean;
@@ -1645,8 +1649,12 @@ function App(): React.JSX.Element {
 
   async function loadSubscriptions(wallet: string) {
     try {
+      const headers: { [key: string]: string } = {};
+      const sessionToken = await AsyncStorage.getItem('sessionToken');
+      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
       const response = await fetch(
-        `${BACKEND_URL}/api/subscriptions/${encodeURIComponent(wallet)}`
+        `${BACKEND_URL}/api/subscriptions/${encodeURIComponent(wallet)}`,
+        { headers }
       );
       const data = (await response.json()) as {
         success?: boolean;
