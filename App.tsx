@@ -87,6 +87,31 @@ async function apiPost(path: string, body: object) {
   }
   return response;
 }
+
+// Wallet-owned reads: the session token plus one re-register retry, the
+// same way as apiPost. Callers check the final status themselves.
+async function apiGet(path: string) {
+  const doRequest = async () => {
+    const headers: { [key: string]: string } = {};
+    const sessionToken = await AsyncStorage.getItem('sessionToken');
+    if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+    return fetch(`${BACKEND_URL}${path}`, { headers });
+  };
+  let response = await doRequest();
+  if (response.status === 401 && reauthHook) {
+    await Promise.all([
+      AsyncStorage.removeItem('sessionToken'),
+      AsyncStorage.removeItem('registerKey'),
+    ]);
+    try {
+      await reauthHook();
+    } catch (error) {
+      console.log('re-register failed', error);
+    }
+    response = await doRequest();
+  }
+  return response;
+}
 const DEFAULT_AVATAR =
   'https://kiloscribe.com/api/inscription-cdn/0.0.4819119';
 
@@ -1416,13 +1441,15 @@ function App(): React.JSX.Element {
 
   async function loadMessages(wallet: string) {
     try {
-      const headers: { [key: string]: string } = {};
-      const sessionToken = await AsyncStorage.getItem('sessionToken');
-      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
-      const res = await fetch(
-        `${BACKEND_URL}/api/messages/${encodeURIComponent(wallet)}`,
-        { headers }
+      const res = await apiGet(
+        `/api/messages/${encodeURIComponent(wallet)}`
       );
+      // Still 401 after the one re-register retry: stop and ask the user
+      // to reconnect — do not loop.
+      if (res.status === 401) {
+        showNotice('Session expired', 'Reconnect your wallet to continue', 'bad');
+        return;
+      }
       const data = (await res.json()) as {
         success?: boolean;
         messages?: {
@@ -1649,13 +1676,15 @@ function App(): React.JSX.Element {
 
   async function loadSubscriptions(wallet: string) {
     try {
-      const headers: { [key: string]: string } = {};
-      const sessionToken = await AsyncStorage.getItem('sessionToken');
-      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
-      const response = await fetch(
-        `${BACKEND_URL}/api/subscriptions/${encodeURIComponent(wallet)}`,
-        { headers }
+      const response = await apiGet(
+        `/api/subscriptions/${encodeURIComponent(wallet)}`
       );
+      // Still 401 after the one re-register retry: stop and ask the user
+      // to reconnect — do not loop.
+      if (response.status === 401) {
+        showNotice('Session expired', 'Reconnect your wallet to continue', 'bad');
+        return;
+      }
       const data = (await response.json()) as {
         success?: boolean;
         subscriptions?: {
