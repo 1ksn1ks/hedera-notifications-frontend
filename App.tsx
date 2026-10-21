@@ -57,6 +57,32 @@ const BACKEND_URL = Platform.OS === 'web' ? '' : 'https://hedera-notifications-b
 // Wallet-owned writes carry the session token issued at register time.
 // The component wires this so a rejected token triggers one re-register.
 let reauthHook: (() => Promise<void>) | null = null;
+// Single-flight: concurrent 401s share one re-register instead of racing.
+let reauthInFlight: Promise<void> | null = null;
+
+// Re-register after a 401: clear the stale credentials, then let the
+// component's hook mint a fresh token. Every caller awaits the same
+// promise while one is in flight; it clears when done.
+function reauthenticate(): Promise<void> {
+  if (!reauthInFlight) {
+    const hook = reauthHook;
+    if (!hook) return Promise.resolve();
+    reauthInFlight = (async () => {
+      await Promise.all([
+        AsyncStorage.removeItem('sessionToken'),
+        AsyncStorage.removeItem('registerKey'),
+      ]);
+      try {
+        await hook();
+      } catch (error) {
+        console.log('re-register failed', error);
+      }
+    })().finally(() => {
+      reauthInFlight = null;
+    });
+  }
+  return reauthInFlight ?? Promise.resolve();
+}
 
 async function apiPost(path: string, body: object) {
   const doRequest = async () => {
@@ -71,18 +97,10 @@ async function apiPost(path: string, body: object) {
   };
   let response = await doRequest();
   // The backend rejected the session (e.g. it was minted during the
-  // unsigned grace period): clear the credentials, re-register for a
-  // fresh token and retry the request once.
-  if (response.status === 401 && reauthHook) {
-    await Promise.all([
-      AsyncStorage.removeItem('sessionToken'),
-      AsyncStorage.removeItem('registerKey'),
-    ]);
-    try {
-      await reauthHook();
-    } catch (error) {
-      console.log('re-register failed', error);
-    }
+  // unsigned grace period): re-register once — shared across concurrent
+  // requests — and retry the request.
+  if (response.status === 401) {
+    await reauthenticate();
     response = await doRequest();
   }
   return response;
@@ -98,16 +116,8 @@ async function apiGet(path: string) {
     return fetch(`${BACKEND_URL}${path}`, { headers });
   };
   let response = await doRequest();
-  if (response.status === 401 && reauthHook) {
-    await Promise.all([
-      AsyncStorage.removeItem('sessionToken'),
-      AsyncStorage.removeItem('registerKey'),
-    ]);
-    try {
-      await reauthHook();
-    } catch (error) {
-      console.log('re-register failed', error);
-    }
+  if (response.status === 401) {
+    await reauthenticate();
     response = await doRequest();
   }
   return response;
@@ -1616,9 +1626,12 @@ function App(): React.JSX.Element {
     }
   }
 
-  // apiPost calls this when the backend rejects the session token.
+  // apiPost/apiGet call this when the backend rejects the session token.
+  // No FCM token or wallet yet means nothing to re-register.
   useEffect(() => {
-    reauthHook = () => registerToken(token, walletAddress);
+    reauthHook = !token || !walletAddress
+      ? null
+      : () => registerToken(token, walletAddress);
     return () => {
       reauthHook = null;
     };
