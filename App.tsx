@@ -55,15 +55,37 @@ import {
 const BACKEND_URL = Platform.OS === 'web' ? '' : 'https://hedera-notifications-backend-production.up.railway.app';
 
 // Wallet-owned writes carry the session token issued at register time.
+// The component wires this so a rejected token triggers one re-register.
+let reauthHook: (() => Promise<void>) | null = null;
+
 async function apiPost(path: string, body: object) {
-  const headers: { [key: string]: string } = { 'Content-Type': 'application/json' };
-  const sessionToken = await AsyncStorage.getItem('sessionToken');
-  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
-  return fetch(`${BACKEND_URL}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const doRequest = async () => {
+    const headers: { [key: string]: string } = { 'Content-Type': 'application/json' };
+    const sessionToken = await AsyncStorage.getItem('sessionToken');
+    if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+    return fetch(`${BACKEND_URL}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  };
+  let response = await doRequest();
+  // The backend rejected the session (e.g. it was minted during the
+  // unsigned grace period): clear the credentials, re-register for a
+  // fresh token and retry the request once.
+  if (response.status === 401 && reauthHook) {
+    await Promise.all([
+      AsyncStorage.removeItem('sessionToken'),
+      AsyncStorage.removeItem('registerKey'),
+    ]);
+    try {
+      await reauthHook();
+    } catch (error) {
+      console.log('re-register failed', error);
+    }
+    response = await doRequest();
+  }
+  return response;
 }
 const DEFAULT_AVATAR =
   'https://kiloscribe.com/api/inscription-cdn/0.0.4819119';
@@ -1551,12 +1573,25 @@ function App(): React.JSX.Element {
         return;
       }
       const data = (await response.json()) as { token?: string };
-      if (data.token) await AsyncStorage.setItem('sessionToken', data.token);
-      await AsyncStorage.setItem('registerKey', `${wallet}:${deviceToken}`);
+      // Only persist credentials for a signed register that came back
+      // with a token — an unsigned grace-period register must not leave
+      // a token or registerKey behind on this device.
+      if (nonce && signature && data.token) {
+        await AsyncStorage.setItem('sessionToken', data.token);
+        await AsyncStorage.setItem('registerKey', `${wallet}:${deviceToken}`);
+      }
     } catch (error) {
       console.log('register failed', error);
     }
   }
+
+  // apiPost calls this when the backend rejects the session token.
+  useEffect(() => {
+    reauthHook = () => registerToken(token, walletAddress);
+    return () => {
+      reauthHook = null;
+    };
+  }, [token, walletAddress]);
 
   async function handleConnectWallet() {
     try {
