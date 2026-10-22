@@ -59,6 +59,29 @@ const BACKEND_URL = Platform.OS === 'web' ? '' : 'https://hedera-notifications-b
 let reauthHook: (() => Promise<void>) | null = null;
 // Single-flight: concurrent 401s share one re-register instead of racing.
 let reauthInFlight: Promise<void> | null = null;
+// Set when a re-register's retry is still 401. While set, apiGet/apiPost
+// return 401 and do not re-register. Cleared when the user connects a
+// wallet or registerToken stores a new session token.
+let sessionDead = false;
+// Shows "Session expired" once, on the transition into a dead session.
+let onSessionDead: (() => void) | null = null;
+
+function markSessionDead() {
+  if (sessionDead) return;
+  sessionDead = true;
+  onSessionDead?.();
+}
+
+function clearDeadSession() {
+  sessionDead = false;
+}
+
+function deadSessionResponse() {
+  return new Response(JSON.stringify({ error: 'Session expired' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 // Re-register after a 401: clear the stale credentials, then let the
 // component's hook mint a fresh token. Every caller awaits the same
@@ -85,6 +108,7 @@ function reauthenticate(): Promise<void> {
 }
 
 async function apiPost(path: string, body: object) {
+  if (sessionDead) return deadSessionResponse();
   const doRequest = async () => {
     const headers: { [key: string]: string } = { 'Content-Type': 'application/json' };
     const sessionToken = await AsyncStorage.getItem('sessionToken');
@@ -98,10 +122,14 @@ async function apiPost(path: string, body: object) {
   let response = await doRequest();
   // The backend rejected the session (e.g. it was minted during the
   // unsigned grace period): re-register once — shared across concurrent
-  // requests — and retry the request.
+  // requests — and retry the request. A retry that is still 401 kills
+  // the session; later calls return 401 without re-registering.
   if (response.status === 401) {
+    if (sessionDead) return response;
     await reauthenticate();
+    if (sessionDead) return response;
     response = await doRequest();
+    if (response.status === 401) markSessionDead();
   }
   return response;
 }
@@ -109,6 +137,7 @@ async function apiPost(path: string, body: object) {
 // Wallet-owned reads: the session token plus one re-register retry, the
 // same way as apiPost. Callers check the final status themselves.
 async function apiGet(path: string) {
+  if (sessionDead) return deadSessionResponse();
   const doRequest = async () => {
     const headers: { [key: string]: string } = {};
     const sessionToken = await AsyncStorage.getItem('sessionToken');
@@ -117,8 +146,11 @@ async function apiGet(path: string) {
   };
   let response = await doRequest();
   if (response.status === 401) {
+    if (sessionDead) return response;
     await reauthenticate();
+    if (sessionDead) return response;
     response = await doRequest();
+    if (response.status === 401) markSessionDead();
   }
   return response;
 }
@@ -1145,22 +1177,25 @@ function App(): React.JSX.Element {
     });
   }, [screen, openTopic, openUser, messages]);
 
-  // Reload when app comes back to foreground
+  // Reload when app comes back to foreground. A dead session skips the
+  // wallet-owned message read; the domain list is public and still loads.
   useEffect(() => {
     const sub = AppState.addEventListener('change', nextState => {
       if (nextState === 'active' && walletAddress) {
-        loadMessages(walletAddress);
+        if (!sessionDead) loadMessages(walletAddress);
         loadDomains();
       }
     });
     return () => sub.remove();
   }, [walletAddress]);
 
-  // While app is open, refresh every 10 seconds
+  // While app is open, refresh every 10 seconds. Skip while the session
+  // is dead so a failed re-register does not run again on every tick.
   useEffect(() => {
     if (!walletAddress) return;
 
     const id = setInterval(() => {
+      if (sessionDead) return;
       loadMessages(walletAddress);
     }, 10000);
 
@@ -1454,12 +1489,8 @@ function App(): React.JSX.Element {
       const res = await apiGet(
         `/api/messages/${encodeURIComponent(wallet)}`
       );
-      // Still 401 after the one re-register retry: stop and ask the user
-      // to reconnect — do not loop.
-      if (res.status === 401) {
-        showNotice('Session expired', 'Reconnect your wallet to continue', 'bad');
-        return;
-      }
+      // 401: the session is dead. The notice was shown once when it died.
+      if (res.status === 401) return;
       const data = (await res.json()) as {
         success?: boolean;
         messages?: {
@@ -1619,12 +1650,24 @@ function App(): React.JSX.Element {
       // a token or registerKey behind on this device.
       if (nonce && signature && data.token) {
         await AsyncStorage.setItem('sessionToken', data.token);
+        clearDeadSession();
         await AsyncStorage.setItem('registerKey', `${wallet}:${deviceToken}`);
       }
     } catch (error) {
       console.log('register failed', error);
     }
   }
+
+  // One "Session expired" notice per dead session. apiGet/apiPost call
+  // this when a re-register retry is still 401.
+  useEffect(() => {
+    onSessionDead = () => {
+      showNotice('Session expired', 'Reconnect your wallet to continue', 'bad');
+    };
+    return () => {
+      onSessionDead = null;
+    };
+  }, []);
 
   // apiPost/apiGet call this when the backend rejects the session token.
   // No FCM token or wallet yet means nothing to re-register.
@@ -1648,6 +1691,7 @@ function App(): React.JSX.Element {
         await new Promise(r => setTimeout(r, 2000));
         const accountId = await getConnectedAccount();
         if (accountId) {
+          clearDeadSession();
           await AsyncStorage.setItem('walletAddress', accountId);
           setWalletAddress(accountId);
 
@@ -1692,12 +1736,8 @@ function App(): React.JSX.Element {
       const response = await apiGet(
         `/api/subscriptions/${encodeURIComponent(wallet)}`
       );
-      // Still 401 after the one re-register retry: stop and ask the user
-      // to reconnect — do not loop.
-      if (response.status === 401) {
-        showNotice('Session expired', 'Reconnect your wallet to continue', 'bad');
-        return;
-      }
+      // 401: the session is dead. The notice was shown once when it died.
+      if (response.status === 401) return;
       const data = (await response.json()) as {
         success?: boolean;
         subscriptions?: {
