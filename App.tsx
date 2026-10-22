@@ -1605,8 +1605,8 @@ function App(): React.JSX.Element {
     if (savedRegister === `${wallet}:${deviceToken}`) return;
 
     // Prove wallet ownership before registering: fetch a challenge, have
-    // the connected wallet sign the readable message, and send the same
-    // nonce plus that signature.
+    // the connected wallet sign the server's message (or the bare nonce
+    // when the server does not send one), and post nonce plus signature.
     let nonce = '';
     let message = '';
     let signature = '';
@@ -1624,7 +1624,7 @@ function App(): React.JSX.Element {
           message =
             typeof challenge.message === 'string' && challenge.message
               ? challenge.message
-              : `Hedera Notifier register ${wallet} nonce ${nonce}`;
+              : nonce;
         }
       }
     } catch (error) {
