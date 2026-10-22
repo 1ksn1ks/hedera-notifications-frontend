@@ -1604,24 +1604,35 @@ function App(): React.JSX.Element {
     const savedRegister = await AsyncStorage.getItem('registerKey');
     if (savedRegister === `${wallet}:${deviceToken}`) return;
 
-    // Prove wallet ownership before registering: fetch a challenge nonce,
-    // have the connected wallet sign it, and send nonce + signature.
+    // Prove wallet ownership before registering: fetch a challenge, have
+    // the connected wallet sign the readable message, and send the same
+    // nonce plus that signature.
     let nonce = '';
+    let message = '';
     let signature = '';
     try {
       const challengeRes = await fetch(
         `${BACKEND_URL}/api/register/challenge?account=${encodeURIComponent(wallet)}`
       );
       if (challengeRes.ok) {
-        const challenge = (await challengeRes.json()) as { nonce?: string };
+        const challenge = (await challengeRes.json()) as {
+          nonce?: string;
+          message?: string;
+        };
         nonce = challenge.nonce || '';
+        if (nonce) {
+          message =
+            typeof challenge.message === 'string' && challenge.message
+              ? challenge.message
+              : `Hedera Notifier register ${wallet} nonce ${nonce}`;
+        }
       }
     } catch (error) {
       console.log('challenge failed', error);
     }
-    if (nonce) {
+    if (nonce && message) {
       try {
-        signature = await signMessage(nonce, wallet);
+        signature = await signMessage(message, wallet);
       } catch (error) {
         console.log('challenge signing failed', error);
       }
