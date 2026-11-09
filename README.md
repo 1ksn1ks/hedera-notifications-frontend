@@ -9,6 +9,44 @@ The inbox reads the same public topics as the [globe](https://onlyonhbar.com). M
 
 ---
 
+## 🚀 Getting started
+
+### Install a test build (Android)
+
+Every push to `main` builds an APK in GitHub Actions (`.github/workflows/android-apk.yml`), opens it on an emulator, and publishes it as the `android-latest` pre-release only if it stays open. On the phone, open:
+
+https://github.com/1ksn1ks/hedera-notifications-frontend/releases/download/android-latest/hedera-notifier-test.apk
+
+Then open the file and allow installs from that source.
+
+Test builds use `./gradlew assembleRelease -PtestBuild`. The id is `com.hederanotifierapp` and the name is “HederaNotifier (test)”, so they install **next to** the Play app. `google-services.json` lists that id, so push still works. They are signed with the committed `debug.keystore`, and each build installs over the last.
+
+Play bundles are unchanged. Without `-PtestBuild` the id, version, and upload key stay as they are. `android/keystore.properties` is never committed.
+
+### Phone
+
+Node `>= 22.11.0`. Android and iOS also need the [React Native environment](https://reactnative.dev/docs/set-up-your-environment).
+
+```bash
+npm install
+npm start          # Metro
+npm run android    # a second terminal, device or emulator
+```
+
+iOS needs CocoaPods on a Mac (`bundle exec pod install` inside `ios/`), then `npm run ios`. The iOS target is still the React Native template: remote push needs an APNs key, a real bundle id, and a `GoogleService-Info.plist` before it can match Android.
+
+### Browser preview
+
+```bash
+npm run start:web
+```
+
+Vite binds `0.0.0.0` on port **5174**. If that port is taken it moves to the next free one and prints `Local: http://localhost:NNNN/` — use that port.
+
+The preview has no FCM token. Subscribing shows “Push alerts only work in the phone app, this is the browser preview.” `/api` is proxied to the production backend, so the inbox is the live one. `server.fs.deny` refuses to serve `android/`, `ios/`, keystores, `google-services.json`, and `.env` files.
+
+---
+
 ## ✨ Features
 
 - **📬 Topic push** — a new consensus message on a subscribed topic becomes a phone notification. The inbox keeps the raw consensus string.
@@ -52,44 +90,6 @@ Hedera mirror node                    ← source of truth
 | **Push** | Firebase Cloud Messaging, Notifee |
 | **Browser preview** | Vite on port 5174, `/api` proxied to the Railway backend |
 | **Backend** | Node.js, Express, SQLite, Firebase Admin — other repo, deployed on Railway |
-
----
-
-## 🚀 Getting started
-
-Node `>= 22.11.0`. Android and iOS also need the [React Native environment](https://reactnative.dev/docs/set-up-your-environment).
-
-### Phone
-
-```bash
-npm install
-npm start          # Metro
-npm run android    # a second terminal, device or emulator
-```
-
-iOS needs CocoaPods on a Mac (`bundle exec pod install` inside `ios/`), then `npm run ios`. The iOS target is still the React Native template: remote push needs an APNs key, a real bundle id, and a `GoogleService-Info.plist` before it can match Android.
-
-### Browser preview
-
-```bash
-npm run start:web
-```
-
-Vite binds `0.0.0.0` on port **5174**. If that port is taken it moves to the next free one and prints `Local: http://localhost:NNNN/` — use that port.
-
-The preview has no FCM token. Subscribing shows “Push alerts only work in the phone app, this is the browser preview.” `/api` is proxied to the production backend, so the inbox is the live one. `server.fs.deny` refuses to serve `android/`, `ios/`, keystores, `google-services.json`, and `.env` files.
-
-### Install a test build (Android)
-
-Every push to `main` builds an APK in GitHub Actions (`.github/workflows/android-apk.yml`), opens it on an emulator, and publishes it as the `android-latest` pre-release only if it stays open. On the phone, open:
-
-https://github.com/1ksn1ks/hedera-notifications-frontend/releases/download/android-latest/hedera-notifier-test.apk
-
-Then open the file and allow installs from that source.
-
-Test builds use `./gradlew assembleRelease -PtestBuild`. The id is `com.hederanotifierapp` and the name is “HederaNotifier (test)”, so they install **next to** the Play app. `google-services.json` lists that id, so push still works. They are signed with the committed `debug.keystore`, and each build installs over the last.
-
-Play bundles are unchanged. Without `-PtestBuild` the id, version, and upload key stay as they are. `android/keystore.properties` is never committed.
 
 ---
 
