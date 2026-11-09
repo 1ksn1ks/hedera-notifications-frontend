@@ -19,9 +19,9 @@ https://github.com/1ksn1ks/hedera-notifications-frontend/releases/download/andro
 
 Then open the file and allow installs from that source.
 
-Test builds use `./gradlew assembleRelease -PtestBuild`. The id is `com.hederanotifierapp` and the name is “HederaNotifier (test)”, so they install **next to** the Play app. `google-services.json` lists that id, so push still works. They are signed with the committed `debug.keystore`, and each build installs over the last.
+Test builds use `./gradlew assembleRelease -PtestBuild`. The id is `com.hederanotifierapp` and the name is “HederaNotifier (test)”, so they install **next to** the Play app. `google-services.json` lists that id, so push still works. They are signed with a private test key kept in GitHub Actions secrets, not in the repo. Each build installs over the last. The first one after the key change does not: uninstall the old test app once.
 
-Play bundles are unchanged. Without `-PtestBuild` the id, version, and upload key stay as they are. `android/keystore.properties` is never committed.
+Play bundles are unchanged. Without `-PtestBuild` the id, version, and upload key stay as they are. `android/keystore.properties` and `android/test-keystore.properties` are never committed. `debug.keystore` is only for debug builds.
 
 ### Phone
 

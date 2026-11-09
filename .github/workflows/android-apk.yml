@@ -3,8 +3,9 @@
 # build:   release APK (JS bundled in) with -PtestBuild: app id
 #          com.hederanotifierapp and label "HederaNotifier (test)", so it
 #          installs NEXT TO the Play app instead of colliding with it. Signed
-#          with the committed debug.keystore so each build installs over the
-#          previous one. Push keeps working: google-services.json lists the id.
+#          with the private test key from Actions secrets (TEST_KEYSTORE_BASE64
+#          and the three TEST_* password/alias secrets) so each build installs
+#          over the previous one. Push keeps working: google-services.json lists the id.
 # smoke:   installs it on an emulator, opens it, and fails if the app closes;
 #          the crash lines (or the first screen's text) become annotations.
 # publish: only after smoke passes, as the "android-latest" pre-release:
@@ -56,7 +57,26 @@ jobs:
       # on CI. x86_64 is only for the emulator smoke test.
       - name: Build the release APK (test build)
         working-directory: android
+        env:
+          TEST_KEYSTORE_BASE64: ${{ secrets.TEST_KEYSTORE_BASE64 }}
+          TEST_STORE_PASSWORD: ${{ secrets.TEST_STORE_PASSWORD }}
+          TEST_KEY_ALIAS: ${{ secrets.TEST_KEY_ALIAS }}
+          TEST_KEY_PASSWORD: ${{ secrets.TEST_KEY_PASSWORD }}
         run: |
+          missing=""
+          [ -n "$TEST_KEYSTORE_BASE64" ] || missing="$missing TEST_KEYSTORE_BASE64"
+          [ -n "$TEST_STORE_PASSWORD" ] || missing="$missing TEST_STORE_PASSWORD"
+          [ -n "$TEST_KEY_ALIAS" ] || missing="$missing TEST_KEY_ALIAS"
+          [ -n "$TEST_KEY_PASSWORD" ] || missing="$missing TEST_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error title=Test signing secrets missing::Add these GitHub Actions secrets before this workflow can sign the test APK:$missing"
+            exit 1
+          fi
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/test-keystore.p12"' EXIT
+          echo "$TEST_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/test-keystore.p12"
+          [ -s "$RUNNER_TEMP/test-keystore.p12" ] || { echo "::error title=Test keystore empty::TEST_KEYSTORE_BASE64 did not decode to a keystore."; exit 1; }
+          export TEST_KEYSTORE="$RUNNER_TEMP/test-keystore.p12"
           chmod +x gradlew
           set -o pipefail
           ./gradlew assembleRelease -PtestBuild \
@@ -147,4 +167,4 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Android test build ${APP_VERSION_NAME}" \
-            --notes "Test build ${APP_VERSION_NAME} from ${GITHUB_SHA::7}. Opened on an Android emulator before publishing. Installs as \"HederaNotifier (test)\" next to the Play app (separate app id com.hederanotifierapp). Download hedera-notifier-test.apk on the phone, open it, allow installing from this source. Each build installs over the previous one. Not a Play build."
+            --notes "Test build ${APP_VERSION_NAME} from ${GITHUB_SHA::7}. Opened on an Android emulator before publishing. Installs as \"HederaNotifier (test)\" next to the Play app (separate app id com.hederanotifierapp). Download hedera-notifier-test.apk on the phone, open it, allow installing from this source. Each build installs over the previous one. The first build after the signing-key change does not: uninstall the old test app once. Not a Play build."

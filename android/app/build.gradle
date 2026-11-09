@@ -78,9 +78,11 @@ def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
  * the Play app is signed with the private upload key, so a test APK signed
  * with another key could never update it. They use the project's original
  * id, com.hederanotifierapp, which google-services.json still lists (push
- * keeps working), the label "HederaNotifier (test)", a version from the CI
- * run, and the committed debug.keystore. Without -PtestBuild nothing
- * changes: Play bundles keep their id, version and upload key.
+ * keeps working), the label "HederaNotifier (test)", and a version from the
+ * CI run. The test key is not in git. CI passes TEST_KEYSTORE and the
+ * passwords; a local test build reads android/test-keystore.properties.
+ * Without -PtestBuild nothing changes: Play bundles keep their id, version
+ * and upload key. debug.keystore is only for debug builds.
  */
 def isTestBuild = project.hasProperty("testBuild")
 
@@ -111,6 +113,25 @@ android {
     if (keystorePropertiesFile.exists()) {
         keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
     }
+    def testKeystorePropertiesFile = rootProject.file("test-keystore.properties")
+    def testKeystoreProperties = new Properties()
+    if (testKeystorePropertiesFile.exists()) {
+        testKeystoreProperties.load(new FileInputStream(testKeystorePropertiesFile))
+    }
+    def pickTest = { String projectProp, String envName, String fileKey ->
+        def fromProp = project.findProperty(projectProp)
+        if (fromProp != null && fromProp.toString().trim()) return fromProp.toString()
+        def fromEnv = System.getenv(envName)
+        if (fromEnv != null && fromEnv.trim()) return fromEnv
+        def fromFile = testKeystoreProperties.getProperty(fileKey)
+        if (fromFile != null && fromFile.trim()) return fromFile
+        return null
+    }
+    def testKeystorePath = pickTest("testKeystore", "TEST_KEYSTORE", "storeFile")
+    def testStorePassword = pickTest("testStorePassword", "TEST_STORE_PASSWORD", "storePassword")
+    def testKeyAlias = pickTest("testKeyAlias", "TEST_KEY_ALIAS", "keyAlias")
+    def testKeyPassword = pickTest("testKeyPassword", "TEST_KEY_PASSWORD", "keyPassword")
+    def testSigningReady = testKeystorePath && testStorePassword && testKeyAlias && testKeyPassword && file(testKeystorePath).exists()
 
     signingConfigs {
         debug {
@@ -118,6 +139,15 @@ android {
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
+        }
+        test {
+            if (testSigningReady) {
+                storeFile file(testKeystorePath)
+                storeType "pkcs12"
+                storePassword testStorePassword
+                keyAlias testKeyAlias
+                keyPassword testKeyPassword
+            }
         }
         release {
             if (keystorePropertiesFile.exists()) {
@@ -133,11 +163,19 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Play: the upload key from keystore.properties. Test builds (and
-            // machines without that file): the committed debug.keystore.
-            // One set of parentheses around the whole choice: Groovy reads
-            // "signingConfig (a) ? b : c" as signingConfig(a).
-            signingConfig((keystorePropertiesFile.exists() && !isTestBuild) ? signingConfigs.release : signingConfigs.debug)
+            // Play: the upload key from keystore.properties. -PtestBuild uses
+            // the private test key and fails if that key is missing, instead
+            // of falling back to debug.keystore.
+            if (isTestBuild) {
+                if (!testSigningReady) {
+                    throw new GradleException("Test signing key is missing. GitHub Actions needs TEST_KEYSTORE, TEST_STORE_PASSWORD, TEST_KEY_ALIAS, and TEST_KEY_PASSWORD. A local test build reads android/test-keystore.properties, which is not committed.")
+                }
+                signingConfig signingConfigs.test
+            } else if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
