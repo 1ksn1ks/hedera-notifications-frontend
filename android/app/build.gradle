@@ -135,7 +135,9 @@ android {
         release {
             // Play: the upload key from keystore.properties. Test builds (and
             // machines without that file): the committed debug.keystore.
-            signingConfig (keystorePropertiesFile.exists() && !isTestBuild) ? signingConfigs.release : signingConfigs.debug
+            // One set of parentheses around the whole choice: Groovy reads
+            // "signingConfig (a) ? b : c" as signingConfig(a).
+            signingConfig((keystorePropertiesFile.exists() && !isTestBuild) ? signingConfigs.release : signingConfigs.debug)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
