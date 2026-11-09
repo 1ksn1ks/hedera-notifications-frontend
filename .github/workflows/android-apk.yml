@@ -74,7 +74,11 @@ jobs:
           fi
           umask 077
           trap 'rm -f "$RUNNER_TEMP/test-keystore.p12"' EXIT
-          echo "$TEST_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/test-keystore.p12"
+          # A pasted secret often ends with a carriage return. GNU base64 rejects that.
+          printf '%s' "$TEST_KEYSTORE_BASE64" | tr -d '\r\n \t' | base64 -d > "$RUNNER_TEMP/test-keystore.p12" || {
+            echo "::error title=Test keystore did not decode::TEST_KEYSTORE_BASE64 is not valid base64. Paste only the long line under that name."
+            exit 1
+          }
           [ -s "$RUNNER_TEMP/test-keystore.p12" ] || { echo "::error title=Test keystore empty::TEST_KEYSTORE_BASE64 did not decode to a keystore."; exit 1; }
           export TEST_KEYSTORE="$RUNNER_TEMP/test-keystore.p12"
           chmod +x gradlew
