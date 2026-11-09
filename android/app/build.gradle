@@ -72,6 +72,18 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/**
+ * GitHub test builds (./gradlew assembleRelease -PtestBuild, see
+ * .github/workflows/android-apk.yml). They install NEXT TO the Play app:
+ * the Play app is signed with the private upload key, so a test APK signed
+ * with another key could never update it. They use the project's original
+ * id, com.hederanotifierapp, which google-services.json still lists (push
+ * keeps working), the label "HederaNotifier (test)", a version from the CI
+ * run, and the committed debug.keystore. Without -PtestBuild nothing
+ * changes: Play bundles keep their id, version and upload key.
+ */
+def isTestBuild = project.hasProperty("testBuild")
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -79,11 +91,15 @@ android {
 
     namespace "com.hederanotifierapp"
     defaultConfig {
-        applicationId "com.hedera.notificationapp"
+        applicationId isTestBuild ? "com.hederanotifierapp" : "com.hedera.notificationapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10
-        versionName "4.6"
+        // Play: bump these two by hand as before. Test builds: from the CI run.
+        versionCode isTestBuild ? (System.getenv("APP_VERSION_CODE") ?: "1").toInteger() : 10
+        versionName isTestBuild ? (System.getenv("APP_VERSION_NAME") ?: "test") : "4.6"
+        // Added to the map, not replacing it: React Native also sets
+        // ${usesCleartextTraffic} through manifestPlaceholders.
+        manifestPlaceholders += [appLabel: isTestBuild ? "HederaNotifier (test)" : "@string/app_name"]
         externalNativeBuild {
             cmake {
                 arguments "-DCMAKE_OBJECT_PATH_MAX=1024"
@@ -117,7 +133,9 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.release
+            // Play: the upload key from keystore.properties. Test builds (and
+            // machines without that file): the committed debug.keystore.
+            signingConfig (keystorePropertiesFile.exists() && !isTestBuild) ? signingConfigs.release : signingConfigs.debug
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

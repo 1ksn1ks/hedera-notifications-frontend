@@ -1,5 +1,25 @@
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
+# Install a test build (Android)
+
+Every push to `main` builds an installable APK in GitHub Actions
+(`.github/workflows/android-apk.yml`), opens it on an Android emulator, and
+only if it stays open publishes it as the `android-latest` pre-release. On
+the phone, open:
+
+https://github.com/1ksn1ks/hedera-notifications-frontend/releases/download/android-latest/hedera-notifier-test.apk
+
+then open the downloaded file and allow installing from that source.
+
+Test builds are made with `./gradlew assembleRelease -PtestBuild`: they use
+the app id `com.hederanotifierapp` and the name "HederaNotifier (test)", so
+they install **next to** the Play app (`com.hedera.notificationapp`), which
+is signed with the private upload key and could not be updated by them. Push
+keeps working because `google-services.json` lists that id. They are signed
+with the committed `debug.keystore`, so each build installs over the last.
+Play bundles are unchanged: without `-PtestBuild` the id, version and upload
+key (`android/keystore.properties`, never committed) stay as they are.
+
 # Getting Started
 
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.

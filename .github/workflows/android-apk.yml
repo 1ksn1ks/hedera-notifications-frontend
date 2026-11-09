@@ -1,0 +1,150 @@
+# Installable Android TEST build on every push to main.
+#
+# build:   release APK (JS bundled in) with -PtestBuild: app id
+#          com.hederanotifierapp and label "HederaNotifier (test)", so it
+#          installs NEXT TO the Play app instead of colliding with it. Signed
+#          with the committed debug.keystore so each build installs over the
+#          previous one. Push keeps working: google-services.json lists the id.
+# smoke:   installs it on an emulator, opens it, and fails if the app closes;
+#          the crash lines (or the first screen's text) become annotations.
+# publish: only after smoke passes, as the "android-latest" pre-release:
+#   https://github.com/1ksn1ks/hedera-notifications-frontend/releases/download/android-latest/hedera-notifier-test.apk
+# Play bundles are not made here: they use the private upload key locally.
+name: Android test APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+env:
+  APP_VERSION_CODE: ${{ github.run_number }}
+  APP_VERSION_NAME: test.${{ github.run_number }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # Node 24 / npm 11, the same as the dev machine (npm ci checks the
+      # lockfile the way that npm wrote it).
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # 4 GB heap: the 2 GB in gradle.properties is tight for a release build
+      # on CI. x86_64 is only for the emulator smoke test.
+      - name: Build the release APK (test build)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease -PtestBuild \
+            -PreactNativeArchitectures=arm64-v8a,armeabi-v7a,x86_64 \
+            "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" \
+            --no-daemon --stacktrace 2>&1 | tee gradle.log
+
+      # Job logs need a signed-in admin; annotations are public. Put Gradle's
+      # own explanation of a failure into one so it can be read anywhere.
+      - name: Show why Gradle failed
+        if: failure()
+        working-directory: android
+        run: |
+          [ -f gradle.log ] || exit 0
+          {
+            awk '/What went wrong:/{f=1} f{print} /\* Try:/{f=0}' gradle.log | head -40
+            grep -E "^e: |error:|FAILED|CMake Error|ninja: build stopped|Execution failed|OutOfMemory|Java heap" gradle.log | head -30
+          } > why.txt
+          msg=$(sed 's/%/%25/g; s/\r//g' why.txt | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Gradle build failed::${msg}"
+
+      - name: Name and verify the APK
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk hedera-notifier-test.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          "${BUILD_TOOLS}apksigner" verify --print-certs hedera-notifier-test.apk
+          "${BUILD_TOOLS}aapt2" dump badging hedera-notifier-test.apk | head -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hedera-notifier-test-apk
+          path: hedera-notifier-test.apk
+          retention-days: 14
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: hedera-notifier-test-apk
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Open the app on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/scripts/android-smoke.sh hedera-notifier-test.apk com.hederanotifierapp
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test
+          path: |
+            logcat.txt
+            ui.xml
+            screen.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hedera-notifier-test-apk
+
+      - name: Publish as the android-latest test build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete android-latest --yes --cleanup-tag || true
+          gh release create android-latest hedera-notifier-test.apk \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Android test build ${APP_VERSION_NAME}" \
+            --notes "Test build ${APP_VERSION_NAME} from ${GITHUB_SHA::7}. Opened on an Android emulator before publishing. Installs as \"HederaNotifier (test)\" next to the Play app (separate app id com.hederanotifierapp). Download hedera-notifier-test.apk on the phone, open it, allow installing from this source. Each build installs over the previous one. Not a Play build."
